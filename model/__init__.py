@@ -11,6 +11,7 @@ modules = [
     "normal_2d",
     "arc",
     "circle",
+    "bezier",
     "group_entities",
     "distance",
     "angle",

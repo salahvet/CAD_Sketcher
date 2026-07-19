@@ -12,6 +12,7 @@ from .. import global_data
 from ..utilities.constants import QUARTER_TURN
 from ..utilities.index import assemble_index, breakdown_index
 from .arc import SlvsArc
+from .bezier import SlvsBezier
 from .base_entity import SlvsGenericEntity
 from .circle import SlvsCircle
 from .line_2d import SlvsLine2D
@@ -40,6 +41,7 @@ _entity_types = (
     SlvsNormal2D,
     SlvsArc,
     SlvsCircle,
+    SlvsBezier,
 )
 
 _entity_collections = (
@@ -53,6 +55,7 @@ _entity_collections = (
     "normals2D",
     "arcs",
     "circles",
+    "beziers",
 )
 
 
@@ -394,6 +397,38 @@ class SlvsEntities(PropertyGroup):
         arc.invert_direction = invert
 
         return self._init_entity(arc, fixed, construction, index_reference)
+
+    def add_bezier(
+        self,
+        p1: SlvsPoint2D,
+        ctrl1: SlvsPoint2D,
+        ctrl2: SlvsPoint2D,
+        p2: SlvsPoint2D,
+        sketch: SlvsSketch,
+        fixed: bool = False,
+        construction: bool = False,
+        index_reference: bool = False,
+    ) -> "SlvsBezier":
+        """Add a cubic bezier segment in 2d space.
+
+        Arguments:
+            p1: Bezier's startpoint.
+            ctrl1: First control point.
+            ctrl2: Second control point.
+            p2: Bezier's endpoint.
+            sketch: The sketch this segment belongs to.
+
+        Returns:
+            SlvsBezier: The created bezier segment.
+        """
+        bez = self.beziers.add()
+        bez.p1_i = p1 if isinstance(p1, int) else p1.slvs_index
+        bez.ctrl1_i = ctrl1 if isinstance(ctrl1, int) else ctrl1.slvs_index
+        bez.ctrl2_i = ctrl2 if isinstance(ctrl2, int) else ctrl2.slvs_index
+        bez.p2_i = p2 if isinstance(p2, int) else p2.slvs_index
+        bez.sketch_i = sketch if isinstance(sketch, int) else sketch.slvs_index
+
+        return self._init_entity(bez, fixed, construction, index_reference)
 
     def add_circle(
         self,
