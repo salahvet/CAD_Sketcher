@@ -2,6 +2,7 @@ import bpy
 from bpy.utils import register_tool, unregister_tool
 
 from .add_arc2d import VIEW3D_T_slvs_add_arc2d
+from .add_arc2d_3p import VIEW3D_T_slvs_add_arc2d_3p
 from .add_bezier2d import VIEW3D_T_slvs_add_bezier2d
 from .add_circle2d import VIEW3D_T_slvs_add_circle2d
 from .add_line2d import VIEW3D_T_slvs_add_line2d
@@ -35,6 +36,7 @@ tools = (
     ),
     (VIEW3D_T_slvs_add_circle2d, {"separator": False, "group": False}),
     (VIEW3D_T_slvs_add_arc2d, {"separator": False, "group": False}),
+    (VIEW3D_T_slvs_add_arc2d_3p, {"separator": False, "group": False}),
     (VIEW3D_T_slvs_add_bezier2d, {"separator": False, "group": False}),
     (VIEW3D_T_slvs_add_rectangle, {"separator": False, "group": False}),
     (VIEW3D_T_slvs_trim, {"separator": True, "group": False}),

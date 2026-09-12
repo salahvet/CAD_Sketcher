@@ -7,12 +7,14 @@ from ..model import types
 from ..stateful_operator import constants
 from ..utilities import preferences
 from .panels.tools import VIEW3D_PT_sketcher_tools
+from .panels.part_tree import VIEW3D_PT_sketcher_part_tree
 from .panels.constraints_list import VIEW3D_PT_sketcher_constraints
 from .panels.debug import VIEW3D_PT_sketcher_debug
 from .panels.entities_list import VIEW3D_PT_sketcher_entities
 from .panels.sketch_select import VIEW3D_PT_sketcher
 from .sketches_list import VIEW3D_UL_sketches
 from .selected_menu import VIEW3D_MT_selected_menu
+from .functions_menu import VIEW3D_MT_sketcher_functions
 
 
 def draw_object_context_menu(self, context: Context):
@@ -40,10 +42,12 @@ classes = [
     VIEW3D_UL_sketches,
     VIEW3D_PT_sketcher,
     VIEW3D_PT_sketcher_tools,
+    VIEW3D_PT_sketcher_part_tree,
     VIEW3D_PT_sketcher_entities,
     VIEW3D_PT_sketcher_constraints,
     VIEW3D_PT_sketcher_debug,
     VIEW3D_MT_selected_menu,
+    VIEW3D_MT_sketcher_functions,
 ]
 
 

@@ -20,7 +20,14 @@ modules = [
     "add_line_2d",
     "add_circle",
     "add_arc",
+    "add_arc_3p",
     "add_bezier",
+    "array_linear",
+    "mirror",
+    "merge_points",
+    "features_3d",
+    "features_solid",
+    "occt_ops",
     "add_rectangle",
     "trim",
     "batch_set",
@@ -40,6 +47,8 @@ modules = [
     "align_view",
     "modifiers",
     "move",
+    "rotate",
+    "scale",
     "duplicate",
     "test"
 ]

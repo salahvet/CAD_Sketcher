@@ -277,6 +277,17 @@ tool_base_keymap = (
         {"type": "G", "value": "PRESS"},
         None,
     ),
+    # --- correctif PureMed : rotation ---
+    (
+        Operators.Rotate,
+        {"type": "R", "value": "PRESS", "ctrl": True},
+        None,
+    ),
+    (
+        Operators.Scale,
+        {"type": "S", "value": "PRESS", "shift": True},
+        None,
+    ),
     (
         Operators.AlignView,
         {"type": "V", "value": "PRESS"},

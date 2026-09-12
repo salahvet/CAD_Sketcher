@@ -18,7 +18,34 @@ class VIEW3D_PT_sketcher_tools(VIEW3D_PT_sketcher_base):
     def draw(self, context: Context):
         layout = self.layout
 
+        # Selection
+        layout.label(text="Select:")
+        row = layout.row(align=True)
+        row.operator(declarations.Operators.SelectAll,
+                     text="All").deselect = False
+        row.operator(declarations.Operators.SelectAll,
+                     text="None").deselect = True
+        row.operator(declarations.Operators.SelectInvert, text="Invert")
+        layout.operator(declarations.Operators.SelectExtendAll,
+                        text="Select Chain")
+
+        layout.separator()
         layout.operator(declarations.Operators.MergePoints)
+
+        # --- correctif PureMed : rotation ---
+        layout.separator()
+        layout.label(text="Transform:")
+        col = layout.column(align=True)
+        col.enabled = bool(
+            len(context.scene.sketcher.entities.selected_active))
+        col.operator(declarations.Operators.Move,
+                     text="Move", icon='ORIENTATION_GLOBAL')
+        col.operator(declarations.Operators.Rotate,
+                     text="Rotate",
+                     icon='DRIVER_ROTATIONAL_DIFFERENCE')
+        col.operator(declarations.Operators.Scale,
+                     text="Scale", icon='MOD_MESHDEFORM')
+        layout.menu(declarations.Menus.FunctionsMenu)
 
         # Constraints
         layout.label(text="Constraints:")

@@ -22,7 +22,10 @@ class GizmoGroups(str, Enum):
 class Operators(str, Enum):
     AddAngle = "view3d.slvs_add_angle"
     AddArc2D = "view3d.slvs_add_arc2d"
+    AddArc3P2D = "view3d.slvs_add_arc_3p_2d"
     AddBezier2D = "view3d.slvs_add_bezier2d"
+    ArrayLinear = "view3d.slvs_array_linear"
+    Mirror = "view3d.slvs_mirror"
     AddCircle2D = "view3d.slvs_add_circle2d"
     AddCoincident = "view3d.slvs_add_coincident"
     AddDiameter = "view3d.slvs_add_diameter"
@@ -40,6 +43,8 @@ class Operators(str, Enum):
     AddRatio = "view3d.slvs_add_ratio"
     AddSymmetry = "view3d.slvs_add_symmetry"
     AddRectangle = "view3d.slvs_add_rectangle"
+    Rotate = "view3d.slvs_rotate"
+    Scale = "view3d.slvs_scale"
     AddSketch = "view3d.slvs_add_sketch"
     AddTangent = "view3d.slvs_add_tangent"
     AddVertical = "view3d.slvs_add_vertical"
@@ -54,6 +59,18 @@ class Operators(str, Enum):
     DeleteEntity = "view3d.slvs_delete_entity"
     InstallPackage = "view3d.slvs_install_package"
     MergePoints = "view3d.slvs_merge_points"
+    FeaturePad = "view3d.slvs_feature_pad"
+    FeaturePocket = "view3d.slvs_feature_pocket"
+    FeatureFillet = "view3d.slvs_feature_fillet"
+    FeaturePadSolid = "view3d.slvs_feature_pad_solid"
+    FeatureFilletEdges = "view3d.slvs_feature_fillet_edges"
+    OCCTPad = "view3d.slvs_occt_pad"
+    OCCTPocket = "view3d.slvs_occt_pocket"
+    OCCTFillet = "view3d.slvs_occt_fillet"
+    OCCTRemoveLast = "view3d.slvs_occt_remove_last"
+    OCCTRemoveFeature = "view3d.slvs_occt_remove_feature"
+    OCCTRecompute = "view3d.slvs_occt_recompute"
+    OCCTPickEdges = "view3d.slvs_occt_pick_edges"
     Paste = "view3d.slvs_paste"
     Move = "view3d.slvs_move"
     Offset = "view3d.slvs_offset"
@@ -88,9 +105,11 @@ class Macros(str, Enum):
 
 class Menus(str, Enum):
     SelectedMenu = "VIEW3D_MT_selected_menu"
+    FunctionsMenu = "VIEW3D_MT_sketcher_functions"
 
 
 class Panels(str, Enum):
+    SketcherPartTree = "VIEW3D_PT_sketcher_part_tree"
     Sketcher = "VIEW3D_PT_sketcher"
     SketcherDebugPanel = "VIEW3D_PT_sketcher_debug_panel"
     SketcherTools = "VIEW3D_PT_sketcher_tools"
@@ -105,6 +124,7 @@ class VisibilityTypes(str, Enum):
 
 class WorkSpaceTools(str, Enum):
     AddArc2D = "sketcher.slvs_add_arc2d"
+    AddArc3P2D = "sketcher.slvs_add_arc_3p_2d"
     AddBezier2D = "sketcher.slvs_add_bezier2d"
     AddCircle2D = "sketcher.slvs_add_circle2d"
     AddLine2D = "sketcher.slvs_add_line2d"

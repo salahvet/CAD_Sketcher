@@ -58,10 +58,22 @@ class VIEW3D_GT_slvs_preselection(Gizmo):
             return -1
         # TODO: Read buffer only once
         PICK_SIZE = 10
-        for x, y in get_spiral_coords(mouse_x, mouse_y, context.area.width, context.area.height, PICK_SIZE):
-            with offscreen.bind():
-                fb = gpu.state.active_framebuffer_get()
-                buffer = fb.read_color(x, y, 1, 1, 4, 0, "FLOAT")
+        # --- correctif PureMed : bornes du tampon ---
+        # Le tampon est cree aux dimensions de la REGION, pas de la zone
+        # (draw_handler.py, ligne 20). Borner sur context.area laissait
+        # sortir les coordonnees des que le curseur passait sur l en-tete
+        # ou la barre laterale. On borne donc sur le tampon lui-meme, ce
+        # qui couvre aussi une vue redimensionnee dont le tampon n a pas
+        # encore ete recree.
+        buf_w, buf_h = offscreen.width, offscreen.height
+        for x, y in get_spiral_coords(mouse_x, mouse_y, buf_w, buf_h, PICK_SIZE):
+            try:
+                with offscreen.bind():
+                    fb = gpu.state.active_framebuffer_get()
+                    buffer = fb.read_color(x, y, 1, 1, 4, 0, "FLOAT")
+            except ValueError:
+                # un cas non prevu ne doit jamais interrompre le survol
+                continue
             r, g, b, alpha = buffer[0][0]
 
             if alpha > 0:
@@ -96,5 +108,6 @@ def get_spiral_coords(X: int, Y: int, width: int, height: int, radius: int = 0):
     """Returns a list of coordinates to check starting from given position spiraling out"""
 
     for x, y in _spiral(radius+1,radius+1):
-        if 0 <= (X+x) <= width and 0 <= (Y+y) <= height:
+        # le dernier pixel valide est width - 1, d ou le < et non <=
+        if 0 <= (X + x) < width and 0 <= (Y + y) < height:
             yield (X+x, Y+y)

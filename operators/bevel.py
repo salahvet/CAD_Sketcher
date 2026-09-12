@@ -52,7 +52,7 @@ class View3D_OT_slvs_bevel(Operator, Operator2d):
 
         # Get connected entities from point
         connected = []
-        for e in (*sse.lines2D, *sse.arcs):
+        for e in (*sse.lines2D, *sse.arcs, *sse.beziers):
             # TODO: Priorize non_construction entities
             if point in e.connection_points():
                 connected.append(e)
@@ -63,6 +63,31 @@ class View3D_OT_slvs_bevel(Operator, Operator2d):
 
         l1, l2 = connected
         self.connected = connected
+
+        # Fork: bezier neighbours are represented by temporary tangent
+        # proxy lines (point -> adjacent control point). Exact tangency is
+        # enforced afterwards by the solver constraints.
+        from ..model.bezier import SlvsBezier
+
+        def _proxy(entity):
+            if not isinstance(entity, SlvsBezier):
+                return entity, None
+            ctrl = entity.ctrl1 if point == entity.p1 else entity.ctrl2
+            proxy = sse.add_line_2d(point, ctrl, sketch)
+            proxy.construction = True
+            return proxy, proxy.slvs_index
+
+        real_indices = [e.slvs_index for e in connected]
+        proxy_indices = []
+        l1, pi1 = _proxy(l1)
+        l2, pi2 = _proxy(l2)
+        proxy_indices = [i for i in (pi1, pi2) if i is not None]
+
+        def _cleanup_proxies():
+            for pi in sorted(proxy_indices, reverse=True):
+                if sse.get(pi) is not None:
+                    sse.remove(pi)
+            self.connected = [sse.get(i) for i in real_indices]
 
         # If more than 1 intersection point, then sort them so we prioritise
         # the closest ones to the selected point.
@@ -88,6 +113,7 @@ class View3D_OT_slvs_bevel(Operator, Operator2d):
             break
 
         if not coords:
+            _cleanup_proxies()
             return False
 
         self.ct = sse.add_point_2d(coords, sketch)
@@ -96,6 +122,7 @@ class View3D_OT_slvs_bevel(Operator, Operator2d):
         p1_co, p2_co = l1.project_point(coords), l2.project_point(coords)
 
         if not all([co is not None for co in (p1_co, p2_co)]):
+            _cleanup_proxies()
             return False
 
         self.points = (
@@ -110,6 +137,8 @@ class View3D_OT_slvs_bevel(Operator, Operator2d):
         # Add Arc
         self.arc = sse.add_arc(sketch.wp.nm, self.ct, *self.points, sketch)
         self.arc.invert_direction = invert
+
+        _cleanup_proxies()
 
         refresh(context)
         return True

@@ -11,6 +11,7 @@ from .line_2d import SlvsLine2D
 from .normal_2d import SlvsNormal2D
 from .arc import SlvsArc
 from .circle import SlvsCircle
+from .bezier import SlvsBezier  # correctif PureMed
 from .group_entities import SlvsEntities
 
 from .base_constraint import GenericConstraint, DimensionalConstraint
