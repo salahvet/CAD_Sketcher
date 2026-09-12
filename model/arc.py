@@ -332,12 +332,33 @@ class SlvsArc(Entity2D, PropertyGroup):
                     other.p1.co, other.p2.co, self.ct.co, self.radius
                 )
             )
-        elif other.is_curve():
+
+        # Cercle / arc : intersection cercle-cercle, puis filtrage angulaire
+        # par parse_retval. On teste la presence reelle de ct/radius plutot
+        # que de se fier a is_curve(), qui peut etre vrai pour une entite
+        # sans centre (SlvsBezier).
+        if hasattr(other, "ct") and hasattr(other, "radius"):
             return parse_retval(
                 intersect_sphere_sphere_2d(
                     self.ct.co, self.radius, other.ct.co, other.radius
                 )
             )
+
+        # Toute autre entite (SlvsBezier du fork, ou un futur type) : on
+        # delegue a sa propre implementation, comme le font deja
+        # SlvsLine2D.intersect et SlvsCircle.intersect.
+        # Sans ce retour final la methode renvoyait None implicitement, ce
+        # qui faisait planter le Trim sur
+        #     for co in segment.intersect(e)
+        # avec TypeError: 'NoneType' object is not iterable.
+        other_intersect = getattr(other, "intersect", None)
+        if other_intersect is not None and not isinstance(other, SlvsArc):
+            retval = other_intersect(self)
+            if retval is None:
+                return ()
+            return tuple(co for co in retval if co is not None)
+
+        return ()
 
     def distance_along_segment(self, p1, p2):
         ct = self.ct.co
