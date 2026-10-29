@@ -13,7 +13,7 @@ class VIEW3D_T_slvs_add_point3d(GenericStateTool, WorkSpaceTool):
     bl_idname = WorkSpaceTools.AddPoint3D
     bl_label = "Add 3D Point"
     bl_operator = Operators.AddPoint3D
-    bl_icon = get_icon("ops.bgs.add_point")
+    bl_icon = get_icon("ops.bgs.add_point3d")
     bl_widget = GizmoGroups.Preselection
     bl_keymap = (
         *tool_generic,

@@ -1,5 +1,6 @@
 from bpy.types import WorkSpaceTool
 
+from ..icon_manager import get_icon
 from ..declarations import GizmoGroups, Operators, WorkSpaceTools
 from ..keymaps import tool_generic
 from ..stateful_operator.tool import GenericStateTool
@@ -12,7 +13,7 @@ class VIEW3D_T_slvs_add_arc2d_3p(GenericStateTool, WorkSpaceTool):
     bl_idname = WorkSpaceTools.AddArc3P2D
     bl_label = "Add 2D Arc (3 Points)"
     bl_operator = Operators.AddArc3P2D
-    bl_icon = "ops.gpencil.primitive_arc"
+    bl_icon = get_icon("ops.bgs.add_arc_3p")
     bl_widget = GizmoGroups.Preselection
     bl_keymap = (
         *tool_generic,
