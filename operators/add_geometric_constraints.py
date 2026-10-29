@@ -249,6 +249,25 @@ class VIEW3D_OT_slvs_add_tangent(Operator, GenericConstraintOp):
     type = "TANGENT"
 
     def main(self, context):
+        from ..model.bezier import SlvsBezier
+        from ..model.utilities import get_connection_point
+        from ..model.circle import SlvsCircle
+        from ..model.arc import SlvsArc
+
+        e1, e2 = self.entity1, self.entity2
+        has_bez = isinstance(e1, SlvsBezier) or isinstance(e2, SlvsBezier)
+        # spline <-> cercle/arc : pas besoin de point commun
+        bez_curve = has_bez and (
+            isinstance(e1, (SlvsCircle, SlvsArc))
+            or isinstance(e2, (SlvsCircle, SlvsArc))
+        )
+        if has_bez and not bez_curve and get_connection_point(e1, e2) is None:
+            self.report(
+                {"WARNING"},
+                "Tangent with a spline: both entities must share an endpoint",
+            )
+            return False
+
         if not self.exists(context, SlvsTangent):
             self.target = context.scene.sketcher.constraints.add_tangent(
                 self.entity1,

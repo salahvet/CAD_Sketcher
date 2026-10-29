@@ -44,6 +44,36 @@ class SlvsTangent(GenericConstraint, PropertyGroup):
         beziers = [e for e in (e1, e2) if isinstance(e, SlvsBezier)]
         if beziers:
             point = get_connection_point(e1, e2)
+            CIRCLE_ARC_B = (SlvsCircle, SlvsArc)
+            if point is None and len(beziers) == 1:
+                bez = beziers[0]
+                other = e2 if bez == e1 else e1
+                if type(other) in CIRCLE_ARC_B:
+                    # spline <-> cercle/arc sans point commun : l'extrémité la
+                    # plus proche est posée sur la courbe, sa poignée est
+                    # perpendiculaire au rayon en ce point
+                    if isinstance(other, SlvsCircle):
+                        r = other.radius
+                    else:
+                        r = (other.p1.co - other.ct.co).length
+
+                    def _gap(pt):
+                        return abs((pt.co - other.ct.co).length - r)
+
+                    end = min((bez.p1, bez.p2), key=_gap)
+                    ctrl = _bezier_ctrl_at(bez, end)
+                    radius = solvesys.add_line_2d(
+                        group, other.ct.py_data, end.py_data, wp
+                    )
+                    handle = solvesys.add_line_2d(
+                        group, end.py_data, ctrl.py_data, wp
+                    )
+                    return (
+                        make_coincident(solvesys, end.py_data, other, wp, group),
+                        solvesys.perpendicular(
+                            group, radius, handle, workplane=wp
+                        ),
+                    )
             if point is None:
                 logger.warning("Tangent (bezier): entities must share a point")
                 return None

@@ -12,7 +12,8 @@ from ..utilities.view import location_3d_to_region_2d
 from ..utilities.math import range_2pi, pol2cart
 from .base_constraint import DimensionalConstraint
 from .utilities import slvs_entity_pointer
-from .categories import CURVE
+from .circle import SlvsCircle
+from .arc import SlvsArc
 from ..utilities.solver import update_system_cb, constraint_value_update_cb
 
 
@@ -68,7 +69,8 @@ class SlvsDiameter(DimensionalConstraint, PropertyGroup):
     leader_angle: FloatProperty(name="Leader Angle", default=45, subtype="ANGLE")
     draw_offset: FloatProperty(name="Draw Offset", default=0)
     type = "DIAMETER"
-    signature = (CURVE,)
+    # Fork : CURVE inclut SlvsBezier, qui n'a ni rayon ni centre
+    signature = ((SlvsCircle, SlvsArc),)
     props = ("value",)
 
     @property

@@ -119,7 +119,16 @@ class Solver:
             # Store a index-constraint mapping
             indices = c.py_data(self.solvesys, group=group)
             indices = indices if type(indices) in (tuple, list) else (indices,)
-            indices = [x['h'] for x in indices]
+            # Fork : une contrainte peut ne rien produire (ex. tangence bezier
+            # sans point commun) -> on l'ignore au lieu de faire planter le solveur
+            valid = [x for x in indices if x is not None]
+            if len(valid) != len(indices):
+                logger.warning(
+                    "Constraint {} produced no solver data, skipped".format(c)
+                )
+                if self.report:
+                    c.failed = True
+            indices = [x['h'] for x in valid]
 
             self._store_constraint_indices(
                 c, indices
@@ -238,14 +247,16 @@ class Solver:
                 for i in fails:
                     if i == self.tweak_constraint:
                         continue
-                    constr = self.constraints[i]
+                    constr = self.constraints.get(i)
+                    if constr is None:
+                        continue
                     constr.failed = True
 
                 def _get_msg_failed():
                     msg = "Failed constraints:"
                     msg += str(fails)
                     for i in fails:
-                        constr = self.constraints[i]
+                        constr = self.constraints.get(i)
                         msg += "\n  - {}".format(constr)
                     return msg
 
