@@ -64,17 +64,62 @@ tools = (
 )
 
 
+# Fork : outils d'esquisse masquables dans la barre de gauche quand
+# Preferences > Sketch Tools = "Top Bar". Select et les plans de travail
+# restent toujours (les plans servent hors esquisse).
+_ALWAYS = {
+    VIEW3D_T_slvs_select,
+    VIEW3D_T_slvs_add_workplane_face,
+    VIEW3D_T_slvs_add_workplane,
+}
+_registered = []
+
+
+def _in_toolbar():
+    try:
+        from ..utilities.preferences import get_prefs
+        return get_prefs().tools_location in {"BOTH", "TOOLBAR"}
+    except Exception:
+        return True
+
+
+def _register_tools():
+    show_all = _in_toolbar()
+    for cls, kwargs in tools:
+        if not show_all and cls not in _ALWAYS:
+            continue
+        register_tool(cls, **kwargs)
+        _registered.append(cls)
+
+
+def _unregister_tools():
+    for cls in reversed(_registered):
+        try:
+            unregister_tool(cls)
+        except Exception:
+            pass
+    _registered.clear()
+
+
+def apply_location():
+    """Re-enregistre les outils selon la preference (appele a son changement)."""
+    if bpy.app.background:
+        return
+    _unregister_tools()
+    _register_tools()
+    for win in bpy.context.window_manager.windows:
+        for area in win.screen.areas:
+            if area.type == "VIEW_3D":
+                area.tag_redraw()
+
+
 def register():
     if bpy.app.background:
         return
-
-    for tool in tools:
-        register_tool(tool[0], **tool[1])
+    _register_tools()
 
 
 def unregister():
     if bpy.app.background:
         return
-
-    for tool in reversed(tools):
-        unregister_tool(tool[0])
+    _unregister_tools()

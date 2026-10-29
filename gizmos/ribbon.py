@@ -315,7 +315,7 @@ class VIEW3D_GGT_slvs_ribbon(GizmoGroup):
         prefs = get_prefs()
         ui = context.preferences.system.ui_scale
         size = BASE * prefs.ribbon_scale * ui
-        gap = size * 0.08
+        gap = size * 0.06
         group_gap = size * 0.55
         band_pad = size * 0.14
         margin = size * 0.25

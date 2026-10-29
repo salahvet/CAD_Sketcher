@@ -152,17 +152,31 @@ class Preferences(AddonPreferences):
     )
     text_size: IntProperty(name="Text Size", default=15, min=5, soft_max=25)
     arrow_scale: FloatProperty(name="Arrow Scale", default=1, min=0.2, soft_max=3)
-    # Fork : barre d'outils flottante
-    show_ribbon: BoolProperty(
-        name="Floating Ribbon",
-        description="Show the sketch tool bar floating at the top of the 3D view",
-        default=True,
+    # Fork : emplacement des outils d'esquisse
+    def _update_tools_location(self, context):
+        from .. import workspacetools
+        workspacetools.apply_location()
+
+    tools_location: EnumProperty(
+        name="Sketch Tools",
+        description="Where to show the sketch drawing and editing tools",
+        items=(
+            ("BOTH", "Toolbar + Top Bar", "Left toolbar and floating bar at the top of the 3D view"),
+            ("TOOLBAR", "Left Toolbar", "Only in the left toolbar (T)"),
+            ("RIBBON", "Top Bar", "Only in the floating bar at the top of the 3D view"),
+        ),
+        default="BOTH",
+        update=_update_tools_location,
     )
     ribbon_scale: FloatProperty(
-        name="Ribbon Size",
-        description="Size of the floating ribbon buttons (1 = header size)",
-        default=1.25, min=0.75, max=5.0,
+        name="Top Bar Size",
+        description="Button size of the top bar (1.7 = same as the left toolbar)",
+        default=1.7, min=0.75, max=5.0,
     )
+
+    @property
+    def show_ribbon(self):
+        return self.tools_location in {"BOTH", "RIBBON"}
     use_align_view: BoolProperty(
         name="Align View",
         description="Automatically align view to workplane when activating a sketch.",
@@ -210,9 +224,9 @@ class Preferences(AddonPreferences):
         col.prop(self, "arrow_scale")
 
         box = layout.box()
-        box.label(text="Ribbon")
+        box.label(text="Sketch Tools")
         col = box.column(align=True)
-        col.prop(self, "show_ribbon")
+        col.prop(self, "tools_location")
         sub = col.column()
         sub.active = self.show_ribbon
         sub.prop(self, "ribbon_scale")
