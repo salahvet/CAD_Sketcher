@@ -151,6 +151,26 @@ def _draw_rect(x, y, w, h, color):
         _rect_batch(shader).draw(shader)
 
 
+def _draw_round_rect(x, y, w, h, r, color, seg=6):
+    import math
+    r = min(r, w / 2, h / 2)
+    pts = [(x + w / 2, y + h / 2)]
+    corners = ((x + w - r, y + r, -90), (x + w - r, y + h - r, 0),
+               (x + r, y + h - r, 90), (x + r, y + r, 180))
+    for cx, cy, a0 in corners:
+        for i in range(seg + 1):
+            a = math.radians(a0 + 90 * i / seg)
+            pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    pts.append(pts[1])
+    shader = gpu.shader.from_builtin("UNIFORM_COLOR")
+    shader.bind()
+    shader.uniform_float("color", color)
+    batch_for_shader(shader, "TRI_FAN", {"pos": pts}).draw(shader)
+
+
+BAND_COLOR = (0.13, 0.13, 0.13, 0.55)
+
+
 # --- bouton ------------------------------------------------------------------
 
 class VIEW3D_GT_slvs_ribbon_button(Gizmo):
@@ -161,6 +181,7 @@ class VIEW3D_GT_slvs_ribbon_button(Gizmo):
         self.rect = (0, 0, 0, 0)
         self.active = False
         self.enabled = True
+        self.band = None
 
     def test_select(self, context, location):
         x, y, w, h = self.rect
@@ -182,10 +203,15 @@ class VIEW3D_GT_slvs_ribbon_button(Gizmo):
             gpu.matrix.load_identity()
             gpu.matrix.load_projection_matrix(_pixel_space(region))
 
+            if self.band:
+                bx, by, bw, bh = self.band
+                _draw_round_rect(bx, by, bw, bh, bh * 0.22, BAND_COLOR)
+
+            radius = w * 0.18
             if self.active:
-                _draw_rect(x, y, w, h, (0.28, 0.45, 0.72, 0.95))
+                _draw_round_rect(x, y, w, h, radius, (0.28, 0.45, 0.72, 0.95))
             elif self.is_highlight:
-                _draw_rect(x, y, w, h, (1.0, 1.0, 1.0, 0.16))
+                _draw_round_rect(x, y, w, h, radius, (1.0, 1.0, 1.0, 0.16))
 
             tex = _texture("constraint" if kind == "constraint" else "ui", icon)
             if tex is not None:
@@ -290,7 +316,8 @@ class VIEW3D_GGT_slvs_ribbon(GizmoGroup):
         ui = context.preferences.system.ui_scale
         size = BASE * prefs.ribbon_scale * ui
         gap = size * 0.08
-        group_gap = size * 0.45
+        group_gap = size * 0.55
+        band_pad = size * 0.14
         margin = size * 0.25
 
         try:
@@ -326,7 +353,13 @@ class VIEW3D_GGT_slvs_ribbon(GizmoGroup):
         for rows, width in lines:
             x = left + margin + max(0.0, (avail - width) / 2)
             for row in rows:
-                for gz in row:
+                row_w = len(row) * size + (len(row) - 1) * gap
+                for k, gz in enumerate(row):
+                    # la bande grise du groupe est dessinee par son 1er bouton
+                    gz.band = (
+                        (x - band_pad, y - band_pad, row_w + 2 * band_pad,
+                         size + 2 * band_pad) if k == 0 else None
+                    )
                     kind, key, icon, label = gz.spec
                     gz.rect = (x, y, size, size)
                     gz.active = (kind == "tool" and active == key) or (
@@ -341,7 +374,7 @@ class VIEW3D_GGT_slvs_ribbon(GizmoGroup):
                             gz.enabled = True
                     x += size + gap
                 x += group_gap - gap
-            y -= size + gap * 3
+            y -= size + 2 * band_pad + gap * 2
 
 
 classes = (VIEW3D_GT_slvs_ribbon_button, VIEW3D_GGT_slvs_ribbon)

@@ -161,7 +161,7 @@ class Preferences(AddonPreferences):
     ribbon_scale: FloatProperty(
         name="Ribbon Size",
         description="Size of the floating ribbon buttons (1 = header size)",
-        default=2.5, min=1.0, max=5.0,
+        default=1.25, min=0.75, max=5.0,
     )
     use_align_view: BoolProperty(
         name="Align View",
