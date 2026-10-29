@@ -11,6 +11,8 @@ from .ribbon import (
     VIEW3D_GT_slvs_ribbon_button,
     VIEW3D_GGT_slvs_ribbon,
     clear_textures as _clear_ribbon_textures,
+    register_handler as _ribbon_register_handler,
+    unregister_handler as _ribbon_unregister_handler,
 )
 from .preselection import (
     VIEW3D_GGT_slvs_preselection,
@@ -41,9 +43,11 @@ classes = (
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    _ribbon_register_handler()
 
 
 def unregister():
+    _ribbon_unregister_handler()
     _clear_ribbon_textures()
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

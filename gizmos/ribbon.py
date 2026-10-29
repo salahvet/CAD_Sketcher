@@ -103,8 +103,115 @@ def _texture(kind, key):
     return tex
 
 
+# --- icones nettes : geometrie rasterisee a la taille exacte -----------------
+#
+# La barre de gauche dessine des .dat (triangles) que Blender rasterise a la
+# taille du bouton. Un PNG reduit au GPU (filtrage bilineaire, sans mipmap)
+# est plus flou : on fait donc comme Blender, avec la geometrie de
+# resources/icons/geom/<nom>.dat, rasterisee une fois par taille avec un
+# surechantillonnage x4 puis moyennee.
+
+SUPERSAMPLE = 4
+ALPHA_GAMMA = 1.0
+_geoms = {}
+_sharp = {}
+
+
+def _geom(name):
+    if name in _geoms:
+        return _geoms[name]
+    g = None
+    path = icon_manager.get_folder_path() / "geom" / (name + ".dat")
+    try:
+        data = path.read_bytes()
+        if data[:3] == b"VCO":
+            n = (len(data) - 8) // 18
+            co = np.frombuffer(data, np.uint8, n * 6, 8).astype(np.float32)
+            col = np.frombuffer(data, np.uint8, n * 12, 8 + n * 6).astype(np.float32)
+            g = (co.reshape(-1, 2), col.reshape(-1, 4) / 255.0)
+    except OSError:
+        g = None
+    _geoms[name] = g
+    return g
+
+
+def _icon_name(kind, key):
+    if kind == "constraint":
+        return icon_manager._operator_types.get(key, str(key))
+    return key
+
+
+def _sharp_texture(kind, key, px):
+    """Texture px x px de l'icone, ou None si sa geometrie manque."""
+    name = _icon_name(kind, key)
+    try:
+        sat = bpy.context.preferences.themes[0].user_interface.icon_saturation
+    except Exception:
+        sat = 1.0
+    ck = (name, px, round(sat, 3))
+    if ck in _sharp:
+        return _sharp[ck]
+    tex = None
+    g = _geom(name)
+    if g is not None and px > 0:
+        co, col = g
+        S = px * SUPERSAMPLE
+        try:
+            off = gpu.types.GPUOffScreen(S, S)
+            with off.bind():
+                fb = gpu.state.active_framebuffer_get()
+                fb.clear(color=(0.0, 0.0, 0.0, 0.0))
+                with gpu.matrix.push_pop(), gpu.matrix.push_pop_projection():
+                    gpu.matrix.load_identity()
+                    # repere des .dat : 0..255 -> -1..1
+                    gpu.matrix.load_projection_matrix(Matrix((
+                        (2.0 / 255.0, 0, 0, -1), (0, 2.0 / 255.0, 0, -1),
+                        (0, 0, 1, 0), (0, 0, 0, 1))))
+                    shader = gpu.shader.from_builtin("SMOOTH_COLOR")
+                    batch = batch_for_shader(
+                        shader, "TRIS", {"pos": co.tolist(), "color": col.tolist()})
+                    gpu.state.blend_set("ALPHA")
+                    batch.draw(shader)
+                    gpu.state.blend_set("NONE")
+                buf = fb.read_color(0, 0, S, S, 4, 0, "FLOAT")
+            off.free()
+            arr = np.array(buf, dtype=np.float32).reshape(S, S, 4)
+            # moyenne par blocs (couleurs premultipliees par le melange ALPHA)
+            arr = arr.reshape(px, SUPERSAMPLE, px, SUPERSAMPLE, 4).mean(axis=(1, 3))
+            a = arr[..., 3:4]
+            arr[..., :3] = np.where(a > 1e-6, arr[..., :3] / np.maximum(a, 1e-6), 0.0)
+            # a ~30 px un trait d'icone fait 1.5 px : aucun pixel n'est
+            # entierement couvert et le trait parait gris. On renforce la
+            # couverture (comme le lissage des polices) pour des traits
+            # francs, proches du rendu de la barre de gauche.
+            arr[..., 3] = np.power(np.clip(arr[..., 3], 0.0, 1.0), ALPHA_GAMMA)
+            # meme saturation que les icones de la barre de gauche
+            # (Theme > User Interface > Icon Saturation)
+            # gris = moyenne des canaux, comme Blender pour ses icones
+            gray = arr[..., :3].mean(axis=-1, keepdims=True)
+            arr[..., :3] = gray + (arr[..., :3] - gray) * sat
+            flat = np.ascontiguousarray(arr, dtype=np.float32).ravel()
+            tex = gpu.types.GPUTexture(
+                (px, px), format="RGBA16F",
+                data=gpu.types.Buffer("FLOAT", flat.size, flat))
+        except Exception:
+            tex = None
+    _sharp[ck] = tex
+    return tex
+
+
+def _has_texture(kind, key, px):
+    try:
+        sat = bpy.context.preferences.themes[0].user_interface.icon_saturation
+    except Exception:
+        sat = 1.0
+    return (_icon_name(kind, key), px, round(sat, 3)) in _sharp
+
+
 def clear_textures():
     _textures.clear()
+    _sharp.clear()
+    _geoms.clear()
 
 
 _quad_batch = {}
@@ -127,6 +234,18 @@ def _image_batch(shader):
             "texCoord": ((0, 0), (1, 0), (1, 1), (0, 1)),
         })
     return _quad_batch[key]
+
+
+def _image_shader():
+    """Shader image integre : il convertit les couleurs sRGB des icones
+    vers l'espace du tampon (lineaire dans la vue 3D). Le shader de
+    l'add-on ne le fait pas et eclaircissait les icones."""
+    for name in ("IMAGE_COLOR", "IMAGE"):
+        try:
+            return gpu.shader.from_builtin(name)
+        except (ValueError, TypeError):
+            continue
+    return icon_manager._get_shader()
 
 
 def _pixel_space(region):
@@ -191,11 +310,16 @@ class VIEW3D_GT_slvs_ribbon_button(Gizmo):
         return 0 if (x <= mx <= x + w and y <= my <= y + h) else -1
 
     def draw(self, context):
+        # Rien ici : Blender attenue le dessin des gizmos Python (~70 %
+        # d'opacite). La barre est dessinee par un draw handler POST_PIXEL
+        # (draw_ribbon), le gizmo ne sert qu'au survol et au clic.
+        pass
+
+    def draw_ui(self, region, tooltip=True):
         if self.spec is None or self.hide:
             return
         kind, key, icon, label = self.spec
         x, y, w, h = self.rect
-        region = context.region
 
         gpu.state.blend_set("ALPHA")
         gpu.state.depth_test_set("NONE")
@@ -213,24 +337,36 @@ class VIEW3D_GT_slvs_ribbon_button(Gizmo):
             elif self.is_highlight:
                 _draw_round_rect(x, y, w, h, radius, (1.0, 1.0, 1.0, 0.16))
 
-            tex = _texture("constraint" if kind == "constraint" else "ui", icon)
+            # icone posee sur la grille de pixels, a sa taille exacte
+            pad, px = _icon_px(w)
+            ix, iy = int(round(x)) + pad, int(round(y)) + pad
+            tex = _sharp_texture(kind, icon, px)
+            if tex is None:  # pas de geometrie : ancien chemin PNG
+                tex = _texture("constraint" if kind == "constraint" else "ui", icon)
             if tex is not None:
-                pad = w * 0.1
                 alpha = 1.0 if self.enabled else 0.3
-                shader = icon_manager._get_shader()
+                shader = _image_shader()
                 with gpu.matrix.push_pop():
                     gpu.matrix.multiply_matrix(
-                        Matrix.Translation((x + pad, y + pad, 0))
-                        @ Matrix.Diagonal((w - 2 * pad, h - 2 * pad, 1, 1))
+                        Matrix.Translation((ix, iy, 0))
+                        @ Matrix.Diagonal((px, px, 1, 1))
                     )
                     shader.bind()
-                    shader.uniform_float("color", (1, 1, 1, alpha))
+                    try:
+                        shader.uniform_float("color", (1, 1, 1, alpha))
+                    except ValueError:
+                        pass  # shader IMAGE sans couleur
                     shader.uniform_sampler("image", tex)
                     _image_batch(shader).draw(shader)
 
-            if self.is_highlight:
+            if tooltip and self.is_highlight:
                 _draw_tooltip(label, x + w / 2, y - 6, w)
         gpu.state.blend_set("NONE")
+
+
+def _icon_px(w):
+    pad = round(w * 0.06)
+    return pad, int(round(w)) - 2 * pad
 
 
 def _draw_tooltip(text, cx, top, button_size):
@@ -376,5 +512,79 @@ class VIEW3D_GGT_slvs_ribbon(GizmoGroup):
                 x += group_gap - gap
             y -= size + 2 * band_pad + gap * 2
 
+        _STATE[region.as_pointer()] = [gz for row in self.buttons for gz in row]
+
 
 classes = (VIEW3D_GT_slvs_ribbon_button, VIEW3D_GGT_slvs_ribbon)
+
+
+# --- dessin par draw handler ---------------------------------------------------
+
+_STATE = {}      # pointeur de region -> boutons (rempli par draw_prepare)
+_handle = None
+
+
+def draw_ribbon():
+    context = bpy.context
+    region = context.region
+    if region is None:
+        return
+    try:
+        if not VIEW3D_GGT_slvs_ribbon.poll(context):
+            return
+        space = context.space_data
+        if space is not None and not space.show_gizmo:
+            return
+    except Exception:
+        return
+    buttons = _STATE.get(region.as_pointer())
+    if not buttons:
+        return
+    hovered = None
+    try:
+        # textures manquantes (1er affichage, nouvelle taille) : on les
+        # construit toutes hors du dessin de la barre, puis on redessine.
+        # Les construire au fil du dessin laissait une image incomplete.
+        missing = False
+        for gz in buttons:
+            if gz.spec is None:
+                continue
+            kind, key, icon, label = gz.spec
+            px = _icon_px(gz.rect[2])[1]
+            if px > 0 and not _has_texture(kind, icon, px):
+                _sharp_texture(kind, icon, px)
+                missing = True
+        if missing:
+            region.tag_redraw()
+            return
+        for gz in buttons:
+            gz.draw_ui(region, tooltip=False)
+            if gz.is_highlight:
+                hovered = gz
+        if hovered is not None:
+            # infobulle en dernier pour passer au-dessus des boutons voisins
+            x, y, w, h = hovered.rect
+            gpu.state.blend_set("ALPHA")
+            with gpu.matrix.push_pop(), gpu.matrix.push_pop_projection():
+                gpu.matrix.load_identity()
+                gpu.matrix.load_projection_matrix(_pixel_space(region))
+                _draw_tooltip(hovered.spec[3], x + w / 2, y - 6, w)
+            gpu.state.blend_set("NONE")
+    except ReferenceError:
+        # groupe de gizmos detruit (sortie d'esquisse, rechargement)
+        _STATE.pop(region.as_pointer(), None)
+
+
+def register_handler():
+    global _handle
+    if _handle is None and not bpy.app.background:
+        _handle = bpy.types.SpaceView3D.draw_handler_add(
+            draw_ribbon, (), "WINDOW", "POST_PIXEL")
+
+
+def unregister_handler():
+    global _handle
+    if _handle is not None:
+        bpy.types.SpaceView3D.draw_handler_remove(_handle, "WINDOW")
+        _handle = None
+    _STATE.clear()

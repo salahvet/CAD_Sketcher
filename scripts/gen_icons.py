@@ -647,6 +647,11 @@ if __name__ == "__main__":
     for name, ic in ICONS.items():
         (out / "svg" / (name + ".svg")).write_text(ic.to_svg(), encoding="utf-8")
         if ic.kind == "tool":
+            # barre d'outils de gauche (Blender lit resources/icons/*.dat)
             (out / "dat").mkdir(parents=True, exist_ok=True)
             (out / "dat" / (name + ".dat")).write_bytes(ic.to_dat())
+        # geometrie de toutes les icones pour la barre du haut, rasterisee
+        # a la taille exacte du bouton (resources/icons/geom/)
+        (out / "geom").mkdir(parents=True, exist_ok=True)
+        (out / "geom" / (name + ".dat")).write_bytes(ic.to_dat())
         print(name, ic.kind, len(ic.tris), "triangles")
