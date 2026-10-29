@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- CAD Sketcher fork : ops.bgs.select -->
+  <polyline points="40.0,40.0 176.0,40.0 176.0,152.0 40.0,152.0 40.0,40.0" fill="none" stroke="#969696" stroke-width="7" stroke-dasharray="18 13" stroke-linecap="butt"/>
+  <polygon points="120.0,96.0 120.0,216.0 150.0,182.0" fill="#ebebeb"/>
+  <polygon points="120.0,96.0 150.0,182.0 196.0,182.0" fill="#ebebeb"/>
+  <polyline points="146.0,176.0 172.0,226.0" fill="none" stroke="#ebebeb" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

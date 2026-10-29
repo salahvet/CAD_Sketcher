@@ -35,11 +35,18 @@ tools = (
             "after": {VIEW3D_T_slvs_add_line2d.bl_idname},
         },
     ),
-    (VIEW3D_T_slvs_add_circle2d, {"separator": False, "group": False}),
-    (VIEW3D_T_slvs_add_arc2d, {"separator": False, "group": False}),
-    (VIEW3D_T_slvs_add_arc2d_3p, {"separator": False, "group": False}),
+    # Fork : sous-categories (appui long) pour gagner de la place
+    (VIEW3D_T_slvs_add_circle2d, {"separator": False, "group": True}),
+    (
+        VIEW3D_T_slvs_add_ellipse2d,
+        {"after": {VIEW3D_T_slvs_add_circle2d.bl_idname}},
+    ),
+    (VIEW3D_T_slvs_add_arc2d, {"separator": False, "group": True}),
+    (
+        VIEW3D_T_slvs_add_arc2d_3p,
+        {"after": {VIEW3D_T_slvs_add_arc2d.bl_idname}},
+    ),
     (VIEW3D_T_slvs_add_bezier2d, {"separator": False, "group": False}),
-    (VIEW3D_T_slvs_add_ellipse2d, {"separator": False, "group": False}),
     (VIEW3D_T_slvs_add_rectangle, {"separator": False, "group": False}),
     (VIEW3D_T_slvs_trim, {"separator": True, "group": False}),
     (VIEW3D_T_slvs_bevel, {"separator": False, "group": False}),

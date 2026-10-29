@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- CAD Sketcher fork : ops.bgs.scale -->
+  <polyline points="36.0,220.0 112.0,220.0 112.0,144.0 36.0,144.0 36.0,220.0" fill="none" stroke="#969696" stroke-width="7" stroke-dasharray="18 13" stroke-linecap="butt"/>
+  <polyline points="36.0,220.0 220.0,220.0 220.0,36.0 36.0,36.0 36.0,220.0" fill="none" stroke="#ebebeb" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="96.0,160.0 172.7,83.3" fill="none" stroke="#75ffaf" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <polygon points="188.0,68.0 148.5,79.5 176.5,107.5" fill="#75ffaf"/>
+  <circle cx="36.0" cy="220.0" r="14" fill="#75ffaf" stroke="#282828" stroke-width="6"/>
+</svg>

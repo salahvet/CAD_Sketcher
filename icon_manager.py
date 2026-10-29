@@ -12,6 +12,8 @@ from .shaders import Shaders
 
 icons = {}
 preview_icons = None
+# Fork : icones PNG des outils et transformations (ruban, boutons)
+ui_icons = None
 _operator_types = {
     Operators.AddDistance: "DISTANCE",
     Operators.AddDiameter: "DIAMETER",
@@ -64,6 +66,7 @@ def load():
         return
 
     load_preview_icons()
+    load_ui_icons()
 
     for operator, icon in preview_icons.items():
         load_icon(_operator_types[operator], icon)
@@ -72,6 +75,7 @@ def load():
 def unload():
     global icons
     unload_preview_icons()
+    unload_ui_icons()
     icons = {}
 
 
@@ -130,3 +134,36 @@ def draw(type, color):
     batch.draw(shader)
 
     gpu.state.blend_set("NONE")
+
+
+# --- Fork : icones d'interface ------------------------------------------------
+
+def load_ui_icons():
+    """Charge resources/icons/png/*.png, cle = nom sans extension
+    (ex. "ops.bgs.add_ellipse")."""
+    global ui_icons
+    if ui_icons or background:
+        return
+    ui_icons = bpy.utils.previews.new()
+    folder = get_folder_path() / "png"
+    if not folder.exists():
+        return
+    for f in sorted(folder.glob("*.png")):
+        ui_icons.load(f.stem, str(f), "IMAGE")
+
+
+def unload_ui_icons():
+    global ui_icons
+    if not ui_icons:
+        return
+    ui_icons.clear()
+    bpy.utils.previews.remove(ui_icons)
+    ui_icons = None
+
+
+def get_ui_icon(name: str) -> int:
+    """icon_value utilisable dans layout.operator(..., icon_value=...)"""
+    if not ui_icons:
+        load_ui_icons()
+    icon = ui_icons.get(name) if ui_icons else None
+    return icon.icon_id if icon else 0

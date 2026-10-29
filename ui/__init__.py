@@ -15,6 +15,7 @@ from .panels.sketch_select import VIEW3D_PT_sketcher
 from .sketches_list import VIEW3D_UL_sketches
 from .selected_menu import VIEW3D_MT_selected_menu
 from .functions_menu import VIEW3D_MT_sketcher_functions
+from .header import draw_sketch_ribbon
 
 
 def draw_object_context_menu(self, context: Context):
@@ -57,6 +58,7 @@ def register():
 
     bpy.types.VIEW3D_MT_object_context_menu.prepend(draw_object_context_menu)
     bpy.types.VIEW3D_MT_add.append(draw_add_sketch_in_add_menu)
+    bpy.types.VIEW3D_HT_tool_header.append(draw_sketch_ribbon)
 
 
 def unregister():
@@ -65,3 +67,4 @@ def unregister():
 
     bpy.types.VIEW3D_MT_object_context_menu.remove(draw_object_context_menu)
     bpy.types.VIEW3D_MT_add.remove(draw_add_sketch_in_add_menu)
+    bpy.types.VIEW3D_HT_tool_header.remove(draw_sketch_ribbon)

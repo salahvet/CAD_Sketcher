@@ -26,14 +26,55 @@ R_PT_RING = 21   # rayon du liseret
 
 
 class Icon:
-    def __init__(self, name):
+    """kind :
+        tool       -> .dat (barre d'outils) + SVG + PNG (ruban)
+        ui         -> SVG + PNG (boutons d'interface)
+        constraint -> masque blanc SVG + PNG 400 px, teinte par le gizmo
+    """
+
+    def __init__(self, name, kind="tool"):
         self.name = name
+        self.kind = kind
+        self.mask = kind == "constraint"
         self.tris = []   # [(p0, p1, p2, color)]
         self.svg = []
+
+    def _c(self, col):
+        """En mode masque tout devient blanc, l'alpha porte la hierarchie."""
+        if not self.mask:
+            return col
+        alpha = col[3] if col not in (CONSTR,) else 150
+        return (255, 255, 255, alpha)
 
     # -- primitives bas niveau --
     def _tri(self, a, b, c, col):
         self.tris.append((a, b, c, col))
+
+    def arrow_head(self, tip, frm, size=30, col=GEOM):
+        """Triangle plein en tip, oriente depuis frm"""
+        col = self._c(col)
+        dx, dy = tip[0] - frm[0], tip[1] - frm[1]
+        L = math.hypot(dx, dy) or 1.0
+        ux, uy = dx / L, dy / L
+        bx, by = tip[0] - ux * size, tip[1] - uy * size
+        nx, ny = -uy * size * 0.55, ux * size * 0.55
+        pts = [tip, (bx + nx, by + ny), (bx - nx, by - ny)]
+        self._tri(*pts, col)
+        self.svg.append('<polygon points="{}" fill="{}"{}/>'.format(
+            " ".join("%.1f,%.1f" % (x, 256 - y) for x, y in pts),
+            _rgb(col), _op(col, "fill-opacity")))
+
+    def arrow(self, a, b, w=W_GEOM, col=GEOM, size=34, both=False):
+        """Trait termine par une (ou deux) pointes"""
+        L = math.hypot(b[0] - a[0], b[1] - a[1])
+        k = (L - size * 0.6) / L
+        b2 = (a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k)
+        a2 = a
+        if both:
+            a2 = (b[0] + (a[0] - b[0]) * k, b[1] + (a[1] - b[1]) * k)
+            self.arrow_head(a, b, size, col)
+        self.stroke([a2, b2], w=w, col=col)
+        self.arrow_head(b, a, size, col)
 
     def _disc_tris(self, c, r, col, seg=20):
         pts = [(c[0] + r * math.cos(2 * math.pi * i / seg),
@@ -56,6 +97,7 @@ class Icon:
 
     # -- primitives d'icone --
     def stroke(self, pts, w=W_GEOM, col=GEOM, closed=False):
+        col = self._c(col)
         pts = list(pts)
         if closed:
             pts = pts + [pts[0]]
@@ -72,6 +114,7 @@ class Icon:
 
     def dashed(self, pts, w=W_CONSTR, col=CONSTR, dash=18, gap=13):
         # decoupe la polyligne en tirets de longueur fixe
+        col = self._c(col)
         pts = list(pts)
         segs = []
         cur, on, left = [pts[0]], True, dash
@@ -103,6 +146,13 @@ class Icon:
                 _rgb(col), w, dash, gap))
 
     def point(self, c, col=ACCENT, r=R_PT):
+        if self.mask:
+            # pas de liseret sombre dans un masque teinte
+            col = self._c(col)
+            self._disc_tris(c, r + 3, col)
+            self.svg.append('<circle cx="%.1f" cy="%.1f" r="%d" fill="%s"/>'
+                            % (c[0], 256 - c[1], r + 3, _rgb(col)))
+            return
         self._disc_tris(c, r + (R_PT_RING - R_PT), DARK)
         self._disc_tris(c, r, col)
         self.svg.append('<circle cx="%.1f" cy="%.1f" r="%d" fill="%s" stroke="%s" '
@@ -110,6 +160,7 @@ class Icon:
                                                  _rgb(DARK), (R_PT_RING - R_PT)))
 
     def square(self, c, h=13, col=CONSTR):
+        col = self._c(col)
         x, y = c
         q = [(x - h, y - h), (x + h, y - h), (x + h, y + h), (x - h, y + h)]
         self._tri(q[0], q[1], q[2], col)
@@ -119,6 +170,7 @@ class Icon:
 
     def poly(self, pts, col=FILL):
         """Polygone convexe plein"""
+        col = self._c(col)
         pts = list(pts)
         for i in range(1, len(pts) - 1):
             self._tri(pts[0], pts[i], pts[i + 1], col)
@@ -184,9 +236,9 @@ R = math.radians
 ICONS = {}
 
 
-def icon(name):
+def icon(name, kind="tool"):
     def deco(f):
-        ic = Icon(name)
+        ic = Icon(name, kind)
         f(ic)
         ICONS[name] = ic
         return f
@@ -330,11 +382,230 @@ def _(i):
     i.poly([(122, 196), (158, 196), (140, 232)], col=ACCENT)
 
 
+# --- outils de modification (barre d'outils) ---------------------------------
+
+RED = (255, 95, 95, 255)
+
+
+@icon("ops.bgs.select")
+def _(i):
+    # cadre de selection + curseur
+    i.dashed([(40, 216), (176, 216), (176, 104), (40, 104), (40, 216)])
+    tip = (120, 160)
+    i.poly([tip, (120, 40), (150, 74)], col=GEOM)
+    i.poly([tip, (150, 74), (196, 74)], col=GEOM)
+    i.stroke([(146, 80), (172, 30)], w=18)
+
+
+@icon("ops.bgs.trim")
+def _(i):
+    # la portion au-dela de l'intersection est supprimee
+    i.stroke([(96, 32), (96, 224)])
+    i.stroke([(32, 128), (96, 128)])
+    i.dashed([(96, 128), (228, 128)])
+    c = (168, 128)
+    i.stroke([(c[0] - 26, c[1] - 26), (c[0] + 26, c[1] + 26)], w=11, col=RED)
+    i.stroke([(c[0] - 26, c[1] + 26), (c[0] + 26, c[1] - 26)], w=11, col=RED)
+    i.point((96, 128))
+
+
+@icon("ops.bgs.bevel")
+def _(i):
+    # conge : coin d'origine en pointille, arc tangent aux deux cotes
+    i.dashed([(64, 120), (64, 208), (152, 208)])
+    i.stroke([(64, 32), (64, 120)])
+    arc = arc_pts((152, 120), 88, math.pi, math.pi / 2)
+    i.stroke(arc)
+    i.stroke([(152, 208), (232, 208)])
+    i.point(arc[0], r=11)
+    i.point(arc[-1], r=11)
+
+
+@icon("ops.bgs.offset")
+def _(i):
+    # contour d'origine en pointille, copie decalee en trait plein
+    c, r1, r2 = (128, 56), 58, 112
+    i.dashed(arc_pts(c, r1, R(180), R(0)))
+    i.stroke(arc_pts(c, r2, R(180), R(0)))
+    a = (c[0], c[1] + r1)
+    b = (c[0], c[1] + r2)
+    i.arrow(a, (b[0], b[1] - 14), w=9, col=ACCENT, size=30)
+
+
+# --- transformations (boutons) -----------------------------------------------
+
+@icon("ops.bgs.move", "ui")
+def _(i):
+    c = (128, 128)
+    for d in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        i.arrow((c[0] + d[0] * 26, c[1] + d[1] * 26),
+                (c[0] + d[0] * 104, c[1] + d[1] * 104), w=12)
+    i.point(c)
+
+
+@icon("ops.bgs.rotate", "ui")
+def _(i):
+    c = (128, 128)
+    pts = arc_pts(c, 84, R(110), R(380))
+    i.stroke(pts[:-3])
+    i.arrow_head(pts[-1], pts[-5], size=40)
+    i.dashed([c, pts[0]])
+    i.point(c)
+
+
+@icon("ops.bgs.scale", "ui")
+def _(i):
+    i.dashed([(36, 36), (112, 36), (112, 112), (36, 112), (36, 36)])
+    i.stroke([(36, 36), (220, 36), (220, 220), (36, 220)], closed=True)
+    i.arrow((96, 96), (188, 188), w=11, col=ACCENT, size=36)
+    i.point((36, 36), r=11)
+
+
+@icon("ops.bgs.mirror", "ui")
+def _(i):
+    i.dashed([(128, 20), (128, 236)], w=8, col=ACCENT)
+    left = [(104, 56), (104, 200), (32, 88)]
+    i.stroke(left, closed=True)
+    i.stroke([(256 - x, y) for x, y in left], closed=True, col=CONSTR)
+
+
+@icon("ops.bgs.array_linear", "ui")
+def _(i):
+    for k, col in enumerate((GEOM, CONSTR, CONSTR)):
+        x = 32 + k * 72
+        sq = [(x, 112), (x + 48, 112), (x + 48, 160), (x, 160)]
+        if k == 0:
+            i.stroke(sq, closed=True)
+        else:
+            i.dashed(sq + [sq[0]], w=9)
+    i.arrow((32, 64), (224, 64), w=10, col=ACCENT, size=30)
+
+
+@icon("ops.bgs.merge_points", "ui")
+def _(i):
+    t = (188, 128)
+    for s in ((56, 200), (56, 56)):
+        i.dashed([s, ((s[0] + t[0]) / 2, (s[1] + t[1]) / 2 + (0 if s[1] < 128 else 0)), t])
+        i.point(s, r=13)
+    i.point(t, r=24)
+
+
+# --- contraintes (masques blancs teintes par le gizmo) -----------------------
+
+@icon("COINCIDENT", "constraint")
+def _(i):
+    i.stroke([(32, 56), (128, 136)])
+    i.stroke([(224, 56), (128, 136)])
+    i.stroke([(128, 136), (128, 228)], col=CONSTR, w=W_CONSTR)
+    i.point((128, 136), r=26)
+
+
+@icon("DISTANCE", "constraint")
+def _(i):
+    i.stroke([(44, 48), (44, 200)], w=W_CONSTR, col=CONSTR)
+    i.stroke([(212, 48), (212, 200)], w=W_CONSTR, col=CONSTR)
+    i.arrow((48, 128), (208, 128), w=12, size=40, both=True)
+    i.stroke([(20, 48), (236, 48)], w=10)
+
+
+@icon("DIAMETER", "constraint")
+def _(i):
+    c, r = (128, 128), 92
+    i.stroke(arc_pts(c, r, 0, 2 * math.pi, n=64), w=10)
+    a = (c[0] - r * 0.707, c[1] - r * 0.707)
+    b = (c[0] + r * 0.707, c[1] + r * 0.707)
+    i.arrow(a, b, w=11, size=38, both=True)
+
+
+@icon("ANGLE", "constraint")
+def _(i):
+    v = (40, 56)
+    i.stroke([v, (232, 56)])
+    end = (v[0] + 200 * math.cos(R(55)), v[1] + 200 * math.sin(R(55)))
+    i.stroke([v, end])
+    arc = arc_pts(v, 120, R(4), R(51))
+    i.stroke(arc[3:-3], w=9)
+    i.arrow_head(arc[-1], arc[-4], size=30)
+    i.arrow_head(arc[0], arc[3], size=30)
+
+
+@icon("EQUAL", "constraint")
+def _(i):
+    i.stroke([(48, 160), (208, 160)], w=26)
+    i.stroke([(48, 96), (208, 96)], w=26)
+
+
+@icon("VERTICAL", "constraint")
+def _(i):
+    i.stroke([(128, 44), (128, 212)], w=18)
+    i.point((128, 44))
+    i.point((128, 212))
+
+
+@icon("HORIZONTAL", "constraint")
+def _(i):
+    i.stroke([(44, 128), (212, 128)], w=18)
+    i.point((44, 128))
+    i.point((212, 128))
+
+
+@icon("PARALLEL", "constraint")
+def _(i):
+    i.stroke([(56, 40), (152, 216)], w=18)
+    i.stroke([(112, 40), (208, 216)], w=18)
+
+
+@icon("PERPENDICULAR", "constraint")
+def _(i):
+    i.stroke([(32, 48), (224, 48)], w=18)
+    i.stroke([(128, 48), (128, 224)], w=18)
+    i.stroke([(128, 96), (176, 96), (176, 48)], w=9, col=CONSTR)
+
+
+@icon("TANGENT", "constraint")
+def _(i):
+    c, r = (128, 92), 68
+    i.stroke(arc_pts(c, r, 0, 2 * math.pi, n=64), w=12)
+    i.stroke([(20, 160), (236, 160)], w=14)
+    i.point((128, 160), r=16)
+
+
+@icon("MIDPOINT", "constraint")
+def _(i):
+    a, b = (32, 72), (224, 184)
+    i.stroke([a, b], w=12)
+    m = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+    for p in (((a[0] + m[0]) / 2, (a[1] + m[1]) / 2),
+              ((b[0] + m[0]) / 2, (b[1] + m[1]) / 2)):
+        i.stroke([(p[0] - 12, p[1] + 21), (p[0] + 12, p[1] - 21)], w=9)
+    i.point(m, r=22)
+
+
+@icon("RATIO", "constraint")
+def _(i):
+    i.stroke([(32, 176), (224, 176)], w=16)
+    i.stroke([(32, 80), (128, 80)], w=16)
+    for x in (32, 128, 224):
+        i.stroke([(x, 160), (x, 192)], w=8, col=CONSTR)
+    for x in (32, 80, 128):
+        i.stroke([(x, 64), (x, 96)], w=8, col=CONSTR)
+
+
+@icon("SYMMETRY", "constraint")
+def _(i):
+    i.dashed([(128, 16), (128, 240)], w=10, col=CONSTR)
+    i.point((56, 128), r=22)
+    i.point((200, 128), r=22)
+    i.arrow((82, 128), (114, 128), w=9, size=24)
+    i.arrow((174, 128), (142, 128), w=9, size=24)
+
+
 if __name__ == "__main__":
     out = Path(sys.argv[1])
     (out / "svg").mkdir(parents=True, exist_ok=True)
-    (out / "dat").mkdir(parents=True, exist_ok=True)
     for name, ic in ICONS.items():
         (out / "svg" / (name + ".svg")).write_text(ic.to_svg(), encoding="utf-8")
-        (out / "dat" / (name + ".dat")).write_bytes(ic.to_dat())
-        print(name, len(ic.tris), "triangles")
+        if ic.kind == "tool":
+            (out / "dat").mkdir(parents=True, exist_ok=True)
+            (out / "dat" / (name + ".dat")).write_bytes(ic.to_dat())
+        print(name, ic.kind, len(ic.tris), "triangles")

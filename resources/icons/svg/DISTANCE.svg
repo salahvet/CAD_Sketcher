@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- CAD Sketcher fork : DISTANCE -->
+  <polyline points="44.0,208.0 44.0,56.0" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.59"/>
+  <polyline points="212.0,208.0 212.0,56.0" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" stroke-opacity="0.59"/>
+  <polygon points="48.0,128.0 88.0,150.0 88.0,106.0" fill="#ffffff"/>
+  <polyline points="72.0,128.0 184.0,128.0" fill="none" stroke="#ffffff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <polygon points="208.0,128.0 168.0,106.0 168.0,150.0" fill="#ffffff"/>
+  <polyline points="20.0,208.0 236.0,208.0" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

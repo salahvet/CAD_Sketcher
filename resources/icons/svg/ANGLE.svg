@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- CAD Sketcher fork : ANGLE -->
+  <polyline points="40.0,200.0 232.0,200.0" fill="none" stroke="#ffffff" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="40.0,200.0 154.7,36.2" fill="none" stroke="#ffffff" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="159.0,184.3 158.6,181.8 158.2,179.4 157.8,177.0 157.3,174.6 156.7,172.2 156.1,169.8 155.5,167.4 154.8,165.1 154.1,162.7 153.3,160.4 152.4,158.1 151.6,155.8 150.6,153.5 149.6,151.2 148.6,149.0 147.6,146.8 146.4,144.6 145.3,142.4 144.1,140.3 142.8,138.2 141.5,136.1 140.2,134.0 138.8,131.9 137.4,129.9 136.0,127.9 134.5,126.0 132.9,124.1 131.4,122.2 129.7,120.3 128.1,118.5 126.4,116.7 124.7,115.0 122.9,113.2 121.1,111.6" fill="none" stroke="#ffffff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <polygon points="115.5,106.7 127.5,138.8 149.0,113.8" fill="#ffffff"/>
+  <polygon points="159.7,191.6 173.1,160.1 140.3,163.4" fill="#ffffff"/>
+</svg>

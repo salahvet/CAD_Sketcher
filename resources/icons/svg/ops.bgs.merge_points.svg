@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- CAD Sketcher fork : ops.bgs.merge_points -->
+  <polyline points="56.0,56.0 122.0,92.0 188.0,128.0" fill="none" stroke="#969696" stroke-width="7" stroke-dasharray="18 13" stroke-linecap="butt"/>
+  <circle cx="56.0" cy="56.0" r="16" fill="#75ffaf" stroke="#282828" stroke-width="6"/>
+  <polyline points="56.0,200.0 122.0,164.0 188.0,128.0" fill="none" stroke="#969696" stroke-width="7" stroke-dasharray="18 13" stroke-linecap="butt"/>
+  <circle cx="56.0" cy="200.0" r="16" fill="#75ffaf" stroke="#282828" stroke-width="6"/>
+  <circle cx="188.0" cy="128.0" r="27" fill="#75ffaf" stroke="#282828" stroke-width="6"/>
+</svg>
