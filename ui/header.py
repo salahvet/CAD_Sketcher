@@ -68,7 +68,10 @@ def draw_sketch_ribbon(self, context: Context):
         return
 
     layout = self.layout
-    layout.operator_context = "INVOKE_DEFAULT"
+    # INVOKE_REGION_WIN (defaut de Blender) : les operateurs tournent dans la
+    # vue 3D et non dans l'en-tete, qui n'a pas de region_data. Sinon
+    # l'alignement de la vue sur l'esquisse echoue (slvs_align_view).
+    layout.operator_context = "INVOKE_REGION_WIN"
 
     if not sketcher.active_sketch:
         # hors esquisse : creer une esquisse ou en rouvrir une

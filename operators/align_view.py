@@ -54,6 +54,10 @@ class View3D_OT_slvs_align_view(bpy.types.Operator):
         global REGION3D, START_LOCATION, START_ROTATION, TARGET_MATRIX, START_TIME, DURATION
 
         REGION3D = context.region_data
+        if REGION3D is None and context.area and context.area.type == "VIEW_3D":
+            # appele depuis un en-tete ou le panneau lateral : on prend la
+            # vue 3D de la zone
+            REGION3D = context.area.spaces.active.region_3d
         DURATION = self.duration
 
         # Check if region_data is available
