@@ -81,6 +81,23 @@ def sketch_to_wires(context, sketch):
         plane = b3d.Plane(origin=P(c.ct.co), z_dir=tuple(normal))
         wires.append(b3d.Wire([b3d.Edge.make_circle(c.radius, plane)]))
 
+    # ellipses (fork) : contours fermes, comme les cercles
+    for el in getattr(ents, "ellipses", ()):
+        if el.sketch_i != sketch.slvs_index or el.construction:
+            continue
+        A, B = el.axes()
+        ra, rb = A.length, B.length
+        if ra < 1e-12 or rb < 1e-12:
+            continue
+        major = A if ra >= rb else B
+        x_dir = (M.to_3x3() @ major.to_3d()).normalized()
+        plane = b3d.Plane(
+            origin=P(el.ct.co), x_dir=tuple(x_dir), z_dir=tuple(normal)
+        )
+        wires.append(
+            b3d.Wire([b3d.Edge.make_ellipse(max(ra, rb), min(ra, rb), plane)])
+        )
+
     return wires, tuple(normal)
 
 

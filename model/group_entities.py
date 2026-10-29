@@ -13,6 +13,7 @@ from ..utilities.constants import QUARTER_TURN
 from ..utilities.index import assemble_index, breakdown_index
 from .arc import SlvsArc
 from .bezier import SlvsBezier
+from .ellipse import SlvsEllipse
 from .base_entity import SlvsGenericEntity
 from .circle import SlvsCircle
 from .line_2d import SlvsLine2D
@@ -42,6 +43,7 @@ _entity_types = (
     SlvsArc,
     SlvsCircle,
     SlvsBezier,
+    SlvsEllipse,
 )
 
 _entity_collections = (
@@ -56,6 +58,7 @@ _entity_collections = (
     "arcs",
     "circles",
     "beziers",
+    "ellipses",
 )
 
 
@@ -429,6 +432,35 @@ class SlvsEntities(PropertyGroup):
         bez.sketch_i = sketch if isinstance(sketch, int) else sketch.slvs_index
 
         return self._init_entity(bez, fixed, construction, index_reference)
+
+    def add_ellipse(
+        self,
+        ct: SlvsPoint2D,
+        pa: SlvsPoint2D,
+        pb: SlvsPoint2D,
+        sketch: SlvsSketch,
+        fixed: bool = False,
+        construction: bool = False,
+        index_reference: bool = False,
+    ) -> "SlvsEllipse":
+        """Add an ellipse in 2d space (fork).
+
+        Arguments:
+            ct: Center point.
+            pa: End of the first semi-axis.
+            pb: End of the second semi-axis (kept perpendicular by the solver).
+            sketch: The sketch this ellipse belongs to.
+
+        Returns:
+            SlvsEllipse: The created ellipse.
+        """
+        el = self.ellipses.add()
+        el.ct_i = ct if isinstance(ct, int) else ct.slvs_index
+        el.pa_i = pa if isinstance(pa, int) else pa.slvs_index
+        el.pb_i = pb if isinstance(pb, int) else pb.slvs_index
+        el.sketch_i = sketch if isinstance(sketch, int) else sketch.slvs_index
+
+        return self._init_entity(el, fixed, construction, index_reference)
 
     def add_circle(
         self,

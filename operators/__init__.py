@@ -22,6 +22,7 @@ modules = [
     "add_arc",
     "add_arc_3p",
     "add_bezier",
+    "add_ellipse",
     "array_linear",
     "mirror",
     "merge_points",

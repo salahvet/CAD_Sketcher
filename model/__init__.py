@@ -12,6 +12,7 @@ modules = [
     "arc",
     "circle",
     "bezier",
+    "ellipse",
     "group_entities",
     "distance",
     "angle",

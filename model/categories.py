@@ -6,6 +6,7 @@ from .line_2d import SlvsLine2D
 from .arc import SlvsArc
 from .circle import SlvsCircle
 from .bezier import SlvsBezier
+from .ellipse import SlvsEllipse
 from .normal_2d import SlvsNormal2D
 
 POINT3D = (SlvsPoint3D,)
@@ -16,4 +17,4 @@ LINE = (SlvsLine3D, SlvsLine2D)
 CURVE = (SlvsCircle, SlvsArc, SlvsBezier)
 SEGMENT = (*LINE, *CURVE)
 
-ELEMENT_2D = (*POINT2D, SlvsLine2D, SlvsNormal2D, SlvsArc, SlvsCircle, SlvsBezier)
+ELEMENT_2D = (*POINT2D, SlvsLine2D, SlvsNormal2D, SlvsArc, SlvsCircle, SlvsBezier, SlvsEllipse)
