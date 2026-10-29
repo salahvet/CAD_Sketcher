@@ -399,14 +399,38 @@ def _(i):
 
 @icon("ops.bgs.trim")
 def _(i):
-    # la portion au-dela de l'intersection est supprimee
-    i.stroke([(96, 32), (96, 224)])
-    i.stroke([(32, 128), (96, 128)])
-    i.dashed([(96, 128), (228, 128)])
-    c = (168, 128)
-    i.stroke([(c[0] - 26, c[1] - 26), (c[0] + 26, c[1] + 26)], w=11, col=RED)
-    i.stroke([(c[0] - 26, c[1] + 26), (c[0] + 26, c[1] - 26)], w=11, col=RED)
-    i.point((96, 128))
+    # ciseaux au-dessus d'un trait : partie gardee pleine, partie coupee
+    # en pointille
+    i.stroke([(24, 40), (128, 40)], w=12)
+    i.dashed([(128, 40), (236, 40)], w=9)
+    i.point((128, 40), r=11)
+
+    pivot = (120, 150)
+    for ring in ((50, 206), (50, 94)):
+        dx, dy = pivot[0] - ring[0], pivot[1] - ring[1]
+        L = math.hypot(dx, dy)
+        ux, uy = dx / L, dy / L
+        tip = (pivot[0] + ux * 108, pivot[1] + uy * 108)
+        nx, ny = -uy * 14, ux * 14
+        # lame effilee
+        i.poly([(pivot[0] + nx, pivot[1] + ny), tip,
+                (pivot[0] - nx, pivot[1] - ny)], col=GEOM)
+        # branche + anneau
+        r = 26
+        start = (ring[0] + ux * r, ring[1] + uy * r)
+        i.stroke([start, pivot], w=13)
+        i.stroke(arc_pts(ring, r, 0, 2 * math.pi, n=40), w=11)
+    i.point(pivot, col=RED, r=10)
+
+
+@icon("ops.bgs.add_rectangle_center")
+def _(i):
+    a, b = (40, 64), (216, 192)
+    i.dashed([a, b])
+    i.dashed([(a[0], b[1]), (b[0], a[1])])
+    i.stroke([a, (b[0], a[1]), b, (a[0], b[1])], closed=True)
+    i.point(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))
+    i.point(b, r=11)
 
 
 @icon("ops.bgs.bevel")

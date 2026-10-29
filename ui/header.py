@@ -16,6 +16,7 @@ DRAW_TOOLS = (
     (WorkSpaceTools.AddPoint2D, "ops.bgs.add_point", "Point"),
     (WorkSpaceTools.AddLine2D, "ops.bgs.add_line", "Line"),
     (WorkSpaceTools.AddRectangle, "ops.bgs.add_rectangle", "Rectangle"),
+    (WorkSpaceTools.AddRectangleCenter, "ops.bgs.add_rectangle_center", "Center Rectangle"),
     (WorkSpaceTools.AddCircle2D, "ops.bgs.add_circle", "Circle"),
     (WorkSpaceTools.AddEllipse2D, "ops.bgs.add_ellipse", "Ellipse"),
     (WorkSpaceTools.AddArc2D, "ops.bgs.add_arc", "Arc (center)"),

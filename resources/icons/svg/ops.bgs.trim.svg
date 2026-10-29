@@ -1,9 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <!-- CAD Sketcher fork : ops.bgs.trim -->
-  <polyline points="96.0,224.0 96.0,32.0" fill="none" stroke="#ebebeb" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
-  <polyline points="32.0,128.0 96.0,128.0" fill="none" stroke="#ebebeb" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
-  <polyline points="96.0,128.0 228.0,128.0" fill="none" stroke="#969696" stroke-width="7" stroke-dasharray="18 13" stroke-linecap="butt"/>
-  <polyline points="142.0,154.0 194.0,102.0" fill="none" stroke="#ff5f5f" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
-  <polyline points="142.0,102.0 194.0,154.0" fill="none" stroke="#ff5f5f" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="96.0" cy="128.0" r="18" fill="#75ffaf" stroke="#282828" stroke-width="6"/>
+  <polyline points="24.0,216.0 128.0,216.0" fill="none" stroke="#ebebeb" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="128.0,216.0 236.0,216.0" fill="none" stroke="#969696" stroke-width="9" stroke-dasharray="18 13" stroke-linecap="butt"/>
+  <circle cx="128.0" cy="216.0" r="14" fill="#75ffaf" stroke="#282828" stroke-width="6"/>
+  <polygon points="128.7,95.1 204.3,173.5 111.3,116.9" fill="#ebebeb"/>
+  <polyline points="70.3,66.2 120.0,106.0" fill="none" stroke="#ebebeb" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="76.0,50.0 75.7,45.9 74.7,42.0 73.2,38.2 71.0,34.7 68.4,31.6 65.3,29.0 61.8,26.8 58.0,25.3 54.1,24.3 50.0,24.0 45.9,24.3 42.0,25.3 38.2,26.8 34.7,29.0 31.6,31.6 29.0,34.7 26.8,38.2 25.3,42.0 24.3,45.9 24.0,50.0 24.3,54.1 25.3,58.0 26.8,61.8 29.0,65.3 31.6,68.4 34.7,71.0 38.2,73.2 42.0,74.7 45.9,75.7 50.0,76.0 54.1,75.7 58.0,74.7 61.8,73.2 65.3,71.0 68.4,68.4 71.0,65.3 73.2,61.8 74.7,58.0 75.7,54.1 76.0,50.0" fill="none" stroke="#ebebeb" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <polygon points="111.3,95.1 204.3,38.5 128.7,116.9" fill="#ebebeb"/>
+  <polyline points="70.3,145.8 120.0,106.0" fill="none" stroke="#ebebeb" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+  <polyline points="76.0,162.0 75.7,157.9 74.7,154.0 73.2,150.2 71.0,146.7 68.4,143.6 65.3,141.0 61.8,138.8 58.0,137.3 54.1,136.3 50.0,136.0 45.9,136.3 42.0,137.3 38.2,138.8 34.7,141.0 31.6,143.6 29.0,146.7 26.8,150.2 25.3,154.0 24.3,157.9 24.0,162.0 24.3,166.1 25.3,170.0 26.8,173.8 29.0,177.3 31.6,180.4 34.7,183.0 38.2,185.2 42.0,186.7 45.9,187.7 50.0,188.0 54.1,187.7 58.0,186.7 61.8,185.2 65.3,183.0 68.4,180.4 71.0,177.3 73.2,173.8 74.7,170.0 75.7,166.1 76.0,162.0" fill="none" stroke="#ebebeb" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="120.0" cy="106.0" r="13" fill="#ff5f5f" stroke="#282828" stroke-width="6"/>
 </svg>

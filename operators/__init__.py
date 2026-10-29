@@ -30,6 +30,7 @@ modules = [
     "features_solid",
     "occt_ops",
     "add_rectangle",
+    "add_rectangle_center",
     "trim",
     "batch_set",
     "bevel",
