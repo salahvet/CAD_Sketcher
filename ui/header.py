@@ -1,9 +1,11 @@
 """Fork : ruban d'outils d'esquisse dans l'en-tete de la vue 3D.
 
-Affiche dans la barre des reglages d'outil (View > Tool Settings), au centre,
-uniquement quand une esquisse est active :
+Affiche dans la barre des reglages d outil (View > Tool Settings), au centre.
+En esquisse :
 
     Dessin | Modification | Transformation | Contraintes | Construction  Quitter
+
+Hors esquisse : Nouvelle esquisse + boutons pour rouvrir les esquisses.
 """
 from bpy.types import Context
 
@@ -62,11 +64,24 @@ def _tool_buttons(layout, tools, active):
 
 def draw_sketch_ribbon(self, context: Context):
     sketcher = getattr(context.scene, "sketcher", None)
-    if not sketcher or not sketcher.active_sketch:
+    if not sketcher:
         return
 
     layout = self.layout
     layout.operator_context = "INVOKE_DEFAULT"
+
+    if not sketcher.active_sketch:
+        # hors esquisse : creer une esquisse ou en rouvrir une
+        layout.separator_spacer()
+        row = layout.row(align=True)
+        row.operator(Operators.AddSketch, text="New Sketch", icon="ADD").wait_for_input = True
+        for sk in list(sketcher.entities.sketches)[:6]:
+            row.operator(
+                Operators.SetActiveSketch, text=sk.name, icon="GREASEPENCIL"
+            ).index = sk.slvs_index
+        layout.separator_spacer()
+        return
+
     active = _active_tool_id(context)
 
     layout.separator_spacer()

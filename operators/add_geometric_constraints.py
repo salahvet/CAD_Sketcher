@@ -351,7 +351,8 @@ class VIEW3D_OT_slvs_add_symmetry(Operator, GenericConstraintOp):
 
 constraint_operators = (
     VIEW3D_OT_slvs_add_coincident,
-    VIEW3D_OT_slvs_merge_points,
+    # VIEW3D_OT_slvs_merge_points : remplace par operators/merge_points.py
+    # (fork) ; l'enregistrer deux fois faisait echouer le dechargement
     VIEW3D_OT_slvs_add_equal,
     VIEW3D_OT_slvs_add_vertical,
     VIEW3D_OT_slvs_add_horizontal,
