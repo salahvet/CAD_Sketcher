@@ -7,6 +7,11 @@ from .constraint import (
 )
 from .diameter import VIEW3D_GGT_slvs_diameter, VIEW3D_GT_slvs_diameter
 from .distance import VIEW3D_GGT_slvs_distance, VIEW3D_GT_slvs_distance
+from .ribbon import (
+    VIEW3D_GT_slvs_ribbon_button,
+    VIEW3D_GGT_slvs_ribbon,
+    clear_textures as _clear_ribbon_textures,
+)
 from .preselection import (
     VIEW3D_GGT_slvs_preselection,
     VIEW3D_GT_slvs_preselection,
@@ -28,6 +33,8 @@ classes = (
     VIEW3D_GGT_slvs_distance,
     VIEW3D_GGT_slvs_angle,
     VIEW3D_GGT_slvs_diameter,
+    VIEW3D_GT_slvs_ribbon_button,
+    VIEW3D_GGT_slvs_ribbon,
 )
 
 
@@ -37,5 +44,6 @@ def register():
 
 
 def unregister():
+    _clear_ribbon_textures()
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

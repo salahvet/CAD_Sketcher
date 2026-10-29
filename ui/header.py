@@ -82,6 +82,15 @@ def draw_sketch_ribbon(self, context: Context):
         layout.separator_spacer()
         return
 
+    # en esquisse, la barre flottante (gizmos/ribbon.py) prend le relais ;
+    # l'en-tete ne sert plus que si elle est desactivee dans les preferences
+    try:
+        from ..utilities.preferences import get_prefs
+        if get_prefs().show_ribbon:
+            return
+    except Exception:
+        pass
+
     active = _active_tool_id(context)
 
     layout.separator_spacer()

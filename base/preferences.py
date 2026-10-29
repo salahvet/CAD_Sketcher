@@ -152,6 +152,17 @@ class Preferences(AddonPreferences):
     )
     text_size: IntProperty(name="Text Size", default=15, min=5, soft_max=25)
     arrow_scale: FloatProperty(name="Arrow Scale", default=1, min=0.2, soft_max=3)
+    # Fork : barre d'outils flottante
+    show_ribbon: BoolProperty(
+        name="Floating Ribbon",
+        description="Show the sketch tool bar floating at the top of the 3D view",
+        default=True,
+    )
+    ribbon_scale: FloatProperty(
+        name="Ribbon Size",
+        description="Size of the floating ribbon buttons (1 = header size)",
+        default=2.5, min=1.0, max=5.0,
+    )
     use_align_view: BoolProperty(
         name="Align View",
         description="Automatically align view to workplane when activating a sketch.",
@@ -197,6 +208,14 @@ class Preferences(AddonPreferences):
         col.prop(self, "gizmo_scale")
         col.prop(self, "text_size")
         col.prop(self, "arrow_scale")
+
+        box = layout.box()
+        box.label(text="Ribbon")
+        col = box.column(align=True)
+        col.prop(self, "show_ribbon")
+        sub = col.column()
+        sub.active = self.show_ribbon
+        sub.prop(self, "ribbon_scale")
 
         box = layout.box()
         box.label(text="Units")

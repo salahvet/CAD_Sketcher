@@ -514,6 +514,23 @@ def _(i):
     i.point(t, r=24)
 
 
+@icon("ops.bgs.construction", "ui")
+def _(i):
+    # geometrie de construction : traits pointilles
+    i.dashed([(40, 56), (216, 200)], w=12, col=GEOM, dash=24, gap=16)
+    i.dashed(arc_pts((128, 128), 92, R(150), R(390), n=60), w=10, col=CONSTR,
+             dash=20, gap=14)
+    i.point((40, 56), r=13)
+    i.point((216, 200), r=13)
+
+
+@icon("ops.bgs.leave_sketch", "ui")
+def _(i):
+    # cadre ouvert + fleche de sortie
+    i.stroke([(150, 196), (150, 220), (36, 220), (36, 36), (150, 36), (150, 60)])
+    i.arrow((88, 128), (232, 128), w=16, col=ACCENT, size=46)
+
+
 # --- contraintes (masques blancs teintes par le gizmo) -----------------------
 
 @icon("COINCIDENT", "constraint")
