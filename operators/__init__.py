@@ -29,6 +29,7 @@ modules = [
     "features_3d",
     "features_solid",
     "occt_ops",
+    "occt_project",
     "add_rectangle",
     "add_rectangle_center",
     "trim",

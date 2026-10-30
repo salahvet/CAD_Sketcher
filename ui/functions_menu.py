@@ -20,6 +20,7 @@ class VIEW3D_MT_sketcher_functions(Menu):
         layout.operator(Operators.OCCTPad, icon="MESH_CUBE")
         layout.operator(Operators.OCCTPocket, icon="MOD_BOOLEAN")
         layout.operator(Operators.OCCTPickEdges, icon="RESTRICT_SELECT_OFF")
+        layout.operator(Operators.OCCTProjectEdges, icon="MOD_SHRINKWRAP")
         layout.operator(Operators.OCCTFillet, icon="MOD_BEVEL")
         layout.operator(Operators.OCCTPattern, icon="MOD_ARRAY")
         layout.operator(Operators.OCCTMirror, icon="MOD_MIRROR")
