@@ -74,7 +74,7 @@ def evaluer(expr, parametres):
     if isinstance(expr, (int, float)):
         return float(expr)
     if not isinstance(expr, str):
-        raise ErreurPont(f"valeur inattendue : {expr!r}")
+        raise ErreurPont(f"unexpected value: {expr!r}")
 
     def ev(n):
         if isinstance(n, ast.Expression):
@@ -86,7 +86,7 @@ def evaluer(expr, parametres):
                 return float(parametres[n.id])
             if n.id == "pi":
                 return math.pi
-            raise ErreurPont(f"parametre inconnu : {n.id}")
+            raise ErreurPont(f"unknown parameter: {n.id}")
         if isinstance(n, ast.BinOp) and type(n.op) in _OPS:
             return _OPS[type(n.op)](ev(n.left), ev(n.right))
         if isinstance(n, ast.UnaryOp) and type(n.op) in _OPS:
@@ -94,12 +94,12 @@ def evaluer(expr, parametres):
         if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                 and n.func.id in _FONCS and not n.keywords):
             return float(_FONCS[n.func.id](*[ev(a) for a in n.args]))
-        raise ErreurPont(f"expression non permise : {expr!r}")
+        raise ErreurPont(f"expression not allowed: {expr!r}")
 
     try:
         return ev(ast.parse(expr, mode="eval"))
     except SyntaxError as e:
-        raise ErreurPont(f"expression invalide : {expr!r}") from e
+        raise ErreurPont(f"invalid expression: {expr!r}") from e
 
 
 def _substituer(obj, parametres):
@@ -122,11 +122,11 @@ def _plan(context, plan):
     sse = context.scene.sketcher.entities
     attr = PLANS.get(str(plan).lower())
     if attr is None:
-        raise ErreurPont(f"plan inconnu : {plan!r} (attendu : {sorted(set(PLANS))})")
+        raise ErreurPont(f"unknown plane: {plan!r} (expected one of {sorted(set(PLANS))})")
     sse.ensure_origin_elements(context)
     wp = getattr(sse, attr)
     if wp is None:
-        raise ErreurPont(f"plan d'origine absent : {attr}")
+        raise ErreurPont(f"origin plane missing: {attr}")
     return wp.slvs_index
 
 
@@ -147,7 +147,7 @@ def esquisse_depuis_contour(plan, origine, contour, nom=None, context=None):
     ou, ov = (float(origine[0]), float(origine[1])) if origine else (0.0, 0.0)
     segments = contour.get("segments") if isinstance(contour, dict) else contour
     if not segments:
-        raise ErreurPont("contour vide")
+        raise ErreurPont("empty contour")
     construction = bool(contour.get("construction")) if isinstance(contour, dict) else False
 
     wp_i = _plan(context, plan)
@@ -201,9 +201,9 @@ def esquisse_depuis_contour(plan, origine, contour, nom=None, context=None):
                 e = sse.add_ellipse(get(point(seg["ct"], False)), get(point(a, False)),
                                     get(point(b, False)), get(sk_i))
             else:
-                raise ErreurPont(f"segment {n} : type inconnu {t!r}")
+                raise ErreurPont(f"segment {n}: unknown type {t!r}")
         except KeyError as err:
-            raise ErreurPont(f"segment {n} ({t}) : champ manquant {err}") from None
+            raise ErreurPont(f"segment {n} ({t}): missing field {err}") from None
         e.construction = cons
         crees.append(e.slvs_index)
 
@@ -236,7 +236,7 @@ def _parametres_effectifs(gabarit, parametres):
             break
     restants = [n for n, v in vals.items() if isinstance(v, str) or v is None]
     if restants:
-        raise ErreurPont(f"parametres sans valeur : {restants}")
+        raise ErreurPont(f"parameters without a value: {restants}")
     return vals
 
 
@@ -270,11 +270,11 @@ def executer_gabarit(gabarit, parametres=None, piece=None, context=None):
         f = _substituer(f, vals)
         op = f.get("op")
         if op not in ("pad", "pocket", "fillet", "chamfer"):
-            raise ErreurPont(f"fonction non prise en charge : {op!r}")
+            raise ErreurPont(f"unsupported feature: {op!r}")
         f = dict(f)
         if "sketch" in f:
             if f["sketch"] not in noms:
-                raise ErreurPont(f"esquisse inconnue : {f['sketch']!r}")
+                raise ErreurPont(f"unknown sketch: {f['sketch']!r}")
             f["sketch"] = noms[f["sketch"]]
         for cle in ("depth", "radius"):  # mm -> unites Blender
             if cle in f:
@@ -305,7 +305,7 @@ def mesurer(piece, context=None):
     context = context or bpy.context
     obj = context.scene.objects.get(piece) if isinstance(piece, str) else piece
     if obj is None:
-        raise ErreurPont(f"piece introuvable : {piece!r}")
+        raise ErreurPont(f"part not found: {piece!r}")
     mm = _mm_par_unite(context)
     coins = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
     boite = [(max(c[a] for c in coins) - min(c[a] for c in coins)) * mm for a in range(3)]
@@ -335,7 +335,7 @@ def _esquisse(esquisse, context):
         for s in context.scene.sketcher.entities.sketches:
             if s.name == esquisse:
                 return s
-        raise ErreurPont(f"esquisse introuvable : {esquisse!r}")
+        raise ErreurPont(f"sketch not found: {esquisse!r}")
     return esquisse
 
 
