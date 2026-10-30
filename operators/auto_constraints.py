@@ -276,7 +276,152 @@ def cotes_proposees(context, sketch, pas_mm=0.05, longueurs=True, ellipses=True,
                 essayer(f"encombrement {sse.get(i).name}", origine_i, i, "HORIZONTAL")
 
     etat, dof = _etat(context, sk_i)
+    ranger_cotes(context, sse.get(sk_i))
     return dict(bilan), etat, dof
+
+
+# ---------------------------------------------------------------------------
+# Rangement des cotes
+# ---------------------------------------------------------------------------
+
+def _contour_echantillons(sse, sketch):
+    """Points de la vraie géométrie (courbes échantillonnées, sans les poignées)."""
+    import math
+    from mathutils import Vector
+    pts = []
+    for e in sse.all:
+        if getattr(e, "sketch", None) != sketch or e.is_point() or e.construction:
+            continue
+        if isinstance(e, SlvsLine2D):
+            pts += [e.p1.co.copy(), e.p2.co.copy()]
+        elif isinstance(e, SlvsBezier):
+            a, b, c, d = e.p1.co, e.ctrl1.co, e.ctrl2.co, e.p2.co
+            for k in range(17):
+                t = k / 16; u = 1 - t
+                pts.append(u ** 3 * a + 3 * u * u * t * b + 3 * u * t * t * c + t ** 3 * d)
+        elif isinstance(e, SlvsEllipse):
+            A, B = e.axes()
+            for k in range(24):
+                t = 2 * math.pi * k / 24
+                pts.append(e.ct.co + A * math.cos(t) + B * math.sin(t))
+        elif hasattr(e, "ct") and hasattr(e, "radius"):
+            for k in range(24):
+                t = 2 * math.pi * k / 24
+                pts.append(e.ct.co + Vector((math.cos(t), math.sin(t))) * e.radius)
+    return pts
+
+
+def ranger_cotes(context, sketch, ecart=None, pas=None):
+    """Place les cotes de distance près de l'esquisse, côté extérieur, comme sur un plan.
+
+    - cotes horizontales / verticales : sous / au-dessus / à côté de la pièce, à `ecart`
+      de son bord ; une rangée de plus seulement si deux cotes se chevauchent ;
+    - cotes obliques ou intérieures (demi-axes, ligne inclinée) : juste à côté de
+      l'élément coté, côté extérieur.
+    ecart, pas en unités Blender ; par défaut 4 % et 3,5 % de la diagonale de la pièce.
+    Ne change aucune valeur, seulement l'affichage. Retourne le nombre de cotes rangées.
+    """
+    from mathutils import Vector
+
+    S = context.scene.sketcher
+    sse = S.entities
+    ui = context.preferences.system.ui_scale or 1.0
+    pts = _contour_echantillons(sse, sketch)
+    if not pts:
+        return 0
+    lo = Vector((min(p.x for p in pts), min(p.y for p in pts)))
+    hi = Vector((max(p.x for p in pts), max(p.y for p in pts)))
+    diag = max((hi - lo).length, 1e-6)
+    ecart = ecart or 0.04 * diag
+    pas = pas or 0.035 * diag
+    M = sketch.wp.matrix_basis
+    Mi = M.inverted()
+    centre = (lo + hi) / 2
+
+    def local(v3):
+        v = Mi @ v3
+        return Vector((v.x, v.y))
+
+    rangees = defaultdict(list)  # (axe, sens) -> [(debut, fin, cote)]
+    total = 0
+    cotes = [c for c in S.constraints.distance if c.sketch == sketch]
+    infos = []
+    for c in cotes:
+        B = c.matrix_basis()
+        o3 = B @ Vector((0, 0, 0))
+        ech = ((B @ Vector((0, 1, 0))) - o3).length
+        if ech < 1e-12:
+            continue
+        o = local(o3)
+        xd = local(B @ Vector((1, 0, 0))) - o
+        yd = local(B @ Vector((0, 1, 0))) - o
+        if xd.length < 1e-12 or yd.length < 1e-12:
+            continue
+        xd.normalize(); yd.normalize()
+        sens = 1.0 if (o + yd - centre).length >= (o - yd - centre).length else -1.0
+        n = yd * sens
+        horiz = abs(xd.x) > 0.999
+        vert = abs(xd.y) > 0.999
+        demi = abs(c.value) / 2
+        infos.append((c, o, xd, n, sens, ech, horiz, vert, demi))
+
+    # 1. cotes d'axe : rangées au bord de la pièce, sans chevauchement
+    for c, o, xd, n, sens, ech, horiz, vert, demi in sorted(
+            [t for t in infos if t[6] or t[7]], key=lambda t: abs(t[0].value)):
+        axe = "H" if horiz else "V"
+        pos_o = o.y if horiz else o.x
+        debut = (o.x if horiz else o.y) - demi
+        fin = (o.x if horiz else o.y) + demi
+        marge = 0.5 * pas
+
+        def placer(nn):
+            cote_bord = (lo.y if nn.y < 0 else hi.y) if horiz else (lo.x if nn.x < 0 else hi.x)
+            cle = (axe, round(nn.x), round(nn.y))
+            niveau = 0
+            while any(r == niveau and not (fin + marge < d0 or debut - marge > f0)
+                      for d0, f0, r in rangees[cle]):
+                niveau += 1
+            return abs(cote_bord - pos_o) + ecart + niveau * pas, cle, niveau
+
+        # les deux côtés possibles : on garde celui où la cote tombe le plus près
+        options = [(placer(n), sens), (placer(-n), -sens)]
+        (d, cle, niveau), sens = min(options, key=lambda t: t[0][0])
+        rangees[cle].append((debut, fin, niveau))
+        c.draw_offset = sens * d / ech / ui
+        c.draw_outset = 0.0
+        total += 1
+
+    # 2. cotes obliques / intérieures : à côté de l'élément
+    for c, o, xd, n, sens, ech, horiz, vert, demi in [t for t in infos if not (t[6] or t[7])]:
+        c.draw_offset = sens * ecart / ech / ui
+        c.draw_outset = 0.0
+        total += 1
+    return total
+
+
+class View3D_OT_slvs_arrange_dimensions(Operator):
+    """Rapproche les cotes de l'esquisse : côté extérieur, à distance régulière, cotes parallèles étagées"""
+
+    bl_idname = Operators.ArrangeDimensions
+    bl_label = "Ranger les cotes"
+    bl_options = {"REGISTER", "UNDO"}
+
+    ecart_mm: FloatProperty(name="Écart (mm)", default=0.0, min=0.0, max=200.0,
+                            description="Distance entre la pièce et la première cote (0 : automatique)")
+    pas_mm: FloatProperty(name="Pas (mm)", default=0.0, min=0.0, max=200.0,
+                          description="Espacement entre cotes parallèles (0 : automatique)")
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene.sketcher.active_sketch is not None
+
+    def execute(self, context: Context):
+        mm = 1000.0 * (context.scene.unit_settings.scale_length or 1.0)
+        n = ranger_cotes(context, context.scene.sketcher.active_sketch,
+                         self.ecart_mm / mm or None, self.pas_mm / mm or None)
+        self.report({"INFO"}, f"{n} cote(s) rangée(s)")
+        refresh(context)
+        return {"FINISHED"}
 
 
 class View3D_OT_slvs_auto_dimensions(Operator):
@@ -348,5 +493,6 @@ Ne crée aucune géométrie et ne pose aucune cote"""
 
 
 register, unregister = register_classes_factory(
-    (View3D_OT_slvs_auto_constraints, View3D_OT_slvs_auto_dimensions)
+    (View3D_OT_slvs_auto_constraints, View3D_OT_slvs_auto_dimensions,
+     View3D_OT_slvs_arrange_dimensions)
 )

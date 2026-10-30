@@ -56,6 +56,7 @@ class Operators(str, Enum):
     AlignView = "view3d.slvs_align_view"
     AutoConstraints = "view3d.slvs_auto_constraints"
     AutoDimensions = "view3d.slvs_auto_dimensions"
+    ArrangeDimensions = "view3d.slvs_arrange_dimensions"
     BatchSet = "view3d.slvs_batch_set"
     ContextMenu = "view3d.slvs_context_menu"
     Copy = "view3d.slvs_copy"

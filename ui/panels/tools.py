@@ -58,6 +58,7 @@ class VIEW3D_PT_sketcher_tools(VIEW3D_PT_sketcher_base):
         col = layout.column(align=True)
         col.operator(declarations.Operators.AutoConstraints, icon="AUTO")
         col.operator(declarations.Operators.AutoDimensions, icon="DRIVER_DISTANCE")
+        col.operator(declarations.Operators.ArrangeDimensions, icon="ALIGN_JUSTIFY")
 
         layout.separator()
 
