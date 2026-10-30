@@ -108,10 +108,23 @@ class View3D_OT_slvs_add_offset(Operator, Operator2d):
                 key=lambda i: (i - point.co).length,
             )
 
+            has_bezier = "SlvsBezier" in (entity.type, neighbour.type)
+            if has_bezier:
+                # jonction tangente : les courbes decalees se touchent sans
+                # se couper franchement -> point decale moyen
+                d_e = _inverted_dist(entity_dir, distance)
+                d_n = _inverted_dist(neighbour_dir, distance)
+                fallback = (
+                    _get_offset_co(point, entity.normal(position=point.co), d_e)
+                    + _get_offset_co(point, neighbour.normal(position=point.co), d_n)
+                ) / 2
+                limit = abs(distance) * 4 + 1e-6
+                if not intersections or (intersections[0] - point.co).length > limit:
+                    intersections = [fallback]
+
             if not intersections:
                 return False
 
-            intr = intersections[0]
             point_coords.append(intersections[0])
 
         points = [
@@ -150,6 +163,14 @@ class View3D_OT_slvs_add_offset(Operator, Operator2d):
             p2 = points[i_end]
 
             use_construction = context.scene.sketcher.use_construction
+            if entity.type == "SlvsBezier":
+                new_entity = self._offset_bezier(
+                    context, entity, p1, p2, direction,
+                    _inverted_dist(direction, distance), use_construction,
+                )
+                ignore_hover(new_entity)
+                self.new_path.append(new_entity)
+                continue
             new_entity = entity.new(
                 context,
                 p1=p1,
@@ -167,6 +188,32 @@ class View3D_OT_slvs_add_offset(Operator, Operator2d):
 
         refresh(context)
         return True
+
+    def _offset_bezier(self, context, bez, p1_i, p2_i, inverted, dist, construction):
+        """Bezier decalee : poignees par Tiller-Hanson, recalees sur les
+        jonctions deja calculees (p1_i, p2_i sont des index de points)."""
+        sse = context.scene.sketcher.entities
+        sketch = self.sketch
+        o_p1, o_c1, o_c2, o_p2 = bez.offset_controls(dist)
+        bez_i = bez.slvs_index
+        # dans le sens de parcours, la nouvelle p1 correspond a l'ancienne p2
+        if inverted:
+            o_p1, o_c1, o_c2, o_p2 = o_p2, o_c2, o_c1, o_p1
+        j1 = sse.get(p1_i).co.copy()
+        j2 = sse.get(p2_i).co.copy()
+        c1 = o_c1 + (j1 - o_p1)
+        c2 = o_c2 + (j2 - o_p2)
+        c1_i = sse.add_point_2d(c1, sketch, index_reference=True)
+        c2_i = sse.add_point_2d(c2, sketch, index_reference=True)
+        for i in (c1_i, c2_i):
+            pt = sse.get(i)
+            pt.construction = construction
+            ignore_hover(pt)
+        new = sse.add_bezier(
+            p1_i, c1_i, c2_i, p2_i, sketch, construction=construction,
+            index_reference=True,
+        )
+        return sse.get(new) if isinstance(new, int) else new
 
     def _offset_ellipse(self, context, ellipse, distance):
         """Ellipse concentrique, meme orientation, rayons + distance.

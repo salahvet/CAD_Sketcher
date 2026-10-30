@@ -425,6 +425,119 @@ class SlvsBezier(Entity2D, PropertyGroup):
     def midpoint(self):
         return self.placement()
 
+    # --- Fork : normale, utilisee par l'Offset ---
+    def tangent_at(self, t):
+        """Derivee de la cubique au parametre t (2D, non normee)."""
+        a, b, c, d = (self.p1.co, self.ctrl1.co, self.ctrl2.co, self.p2.co)
+        u = 1.0 - t
+        vec = 3 * u * u * (b - a) + 6 * u * t * (c - b) + 3 * t * t * (d - c)
+        if vec.length < 1e-12:  # poignee confondue avec l'extremite
+            vec = (c - a) if t < 0.5 else (d - b)
+        return vec
+
+    def normal(self, position=None):
+        """Normale a droite du sens p1 -> p2, comme SlvsLine2D.normal.
+
+        Sans position : au milieu ; sinon au point de la courbe le plus
+        proche (extremites reconnues exactement).
+        """
+        if position is None:
+            t = 0.5
+        elif (position - self.p1.co).length < 1e-9:
+            t = 0.0
+        elif (position - self.p2.co).length < 1e-9:
+            t = 1.0
+        else:
+            t = self._parametre(position)
+        tg = self.tangent_at(t)
+        if tg.length < 1e-12:
+            return tg
+        tg = tg.normalized()
+        return tg.__class__((tg.y, -tg.x))
+
+    def offset_controls(self, offset, samples=24, iterations=3):
+        """Points de controle (p1, c1, c2, p2) de la courbe decalee de offset.
+
+        Le decale exact d'une cubique n'est pas une cubique : on garde les
+        extremites et les tangentes de la courbe d'origine, et on ajuste les
+        longueurs des deux poignees aux moindres carres sur la vraie courbe
+        decalee (avec reparametrage), ce qui reste fidele meme en S.
+        """
+        def bern(t):
+            u = 1.0 - t
+            return u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t
+
+        def cubic(P, t):
+            b = bern(t)
+            return P[0] * b[0] + P[1] * b[1] + P[2] * b[2] + P[3] * b[3]
+
+        p1 = self.p1.co + self.normal(self.p1.co) * offset
+        p2 = self.p2.co + self.normal(self.p2.co) * offset
+        T0 = self.tangent_at(0.0)
+        T1 = self.tangent_at(1.0)
+        if T0.length < 1e-12 or T1.length < 1e-12:
+            return p1, self.ctrl1.co + (p1 - self.p1.co), self.ctrl2.co + (p2 - self.p2.co), p2
+        T0, T1 = T0.normalized(), T1.normalized()
+
+        targets = []
+        for k in range(1, samples):
+            t = k / samples
+            q = self._point(t)
+            targets.append(q + self.normal(q) * offset)
+
+        # depart : poignees de meme longueur relative que l'original
+        alpha = (self.ctrl1.co - self.p1.co).length or (p2 - p1).length / 3
+        beta = (self.p2.co - self.ctrl2.co).length or (p2 - p1).length / 3
+        params = [k / samples for k in range(1, samples)]
+        for _ in range(iterations):
+            a11 = a12 = a22 = r1 = r2 = 0.0
+            for t, Q in zip(params, targets):
+                b = bern(t)
+                R = Q - p1 * (b[0] + b[1]) - p2 * (b[2] + b[3])
+                A = T0 * b[1]
+                B = -T1 * b[2]
+                a11 += A.dot(A); a12 += A.dot(B); a22 += B.dot(B)
+                r1 += A.dot(R); r2 += B.dot(R)
+            det = a11 * a22 - a12 * a12
+            if abs(det) < 1e-14:
+                break
+            alpha = (r1 * a22 - r2 * a12) / det
+            beta = (a11 * r2 - a12 * r1) / det
+            P = (p1, p1 + T0 * alpha, p2 - T1 * beta, p2)
+            # reparametrage : t le plus proche de chaque cible (Newton)
+            new_params = []
+            for t, Q in zip(params, targets):
+                for _n in range(4):
+                    u = 1 - t
+                    d1 = 3 * u * u * (P[1] - P[0]) + 6 * u * t * (P[2] - P[1]) + 3 * t * t * (P[3] - P[2])
+                    d2 = 6 * u * (P[2] - 2 * P[1] + P[0]) + 6 * t * (P[3] - 2 * P[2] + P[1])
+                    diff = cubic(P, t) - Q
+                    den = d1.dot(d1) + diff.dot(d2)
+                    if abs(den) < 1e-14:
+                        break
+                    t = min(max(t - diff.dot(d1) / den, 0.0), 1.0)
+                new_params.append(t)
+            params = new_params
+        span = max((p2 - p1).length, 1e-9)
+        # garde-fou : poignees retournees ou demesurees -> translation simple
+        if not (0 < alpha < 3 * span and 0 < beta < 3 * span):
+            return p1, self.ctrl1.co + (p1 - self.p1.co), self.ctrl2.co + (p2 - self.p2.co), p2
+        return p1, p1 + T0 * alpha, p2 - T1 * beta, p2
+
+    def offset_polyline(self, offset, samples=64, extend=True):
+        """Polyligne de la courbe decalee, prolongee par ses tangentes."""
+        pts = [self._point(i / samples) + self.normal(self._point(i / samples)) * offset
+               if 0 < i < samples else None for i in range(samples + 1)]
+        pts[0] = self.p1.co + self.normal(self.p1.co) * offset
+        pts[-1] = self.p2.co + self.normal(self.p2.co) * offset
+        if extend:
+            span = max((self.p2.co - self.p1.co).length, 1e-6) * 10
+            t0 = self.tangent_at(0.0).normalized()
+            t1 = self.tangent_at(1.0).normalized()
+            pts.insert(0, pts[0] - t0 * span)
+            pts.append(pts[-1] + t1 * span)
+        return pts
+
     def replace_point(self, old, new):
         for ptr in ("p1", "ctrl1", "ctrl2", "p2"):
             if old != getattr(self, ptr):
