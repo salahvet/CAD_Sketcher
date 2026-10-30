@@ -5,6 +5,7 @@ from bpy.types import Operator, Context
 from bpy.props import FloatProperty
 
 from ..model.categories import SEGMENT
+from ..model.ellipse import SlvsEllipse
 from ..model.identifiers import is_line, is_circle
 from ..declarations import Operators
 from ..stateful_operator.utilities.register import register_stateops_factory
@@ -48,7 +49,7 @@ class View3D_OT_slvs_add_offset(Operator, Operator2d):
             description="Base entity to get path from",
             pointer="entity",
             use_create=False,
-            types=SEGMENT,
+            types=(*SEGMENT, SlvsEllipse),
         ),
         state_from_args(
             "Distance",
@@ -72,6 +73,9 @@ class View3D_OT_slvs_add_offset(Operator, Operator2d):
 
             refresh(context)
             return True
+
+        if isinstance(entity, SlvsEllipse):
+            return self._offset_ellipse(context, entity, distance)
 
 
         walker = EntityWalker(context.scene, sketch, entity=entity)
@@ -161,6 +165,35 @@ class View3D_OT_slvs_add_offset(Operator, Operator2d):
 
             self.new_path.append(new_entity)
 
+        refresh(context)
+        return True
+
+    def _offset_ellipse(self, context, ellipse, distance):
+        """Ellipse concentrique, meme orientation, rayons + distance.
+
+        Le decalage exact d'une ellipse n'est pas une ellipse : c'est
+        l'approximation usuelle, fidele tant que la distance reste petite
+        devant le petit rayon.
+        """
+        sse = context.scene.sketcher.entities
+        sketch = self.sketch
+        A, B = ellipse.axes()
+        ra, rb = A.length + distance, B.length + distance
+        if ra <= 1e-6 or rb <= 1e-6 or A.length < 1e-9 or B.length < 1e-9:
+            return False  # decalage vers l'interieur plus grand que l'ellipse
+
+        # index seulement : ajouter des points peut reallouer les collections
+        ct_i = ellipse.ct.slvs_index
+        c = ellipse.ct.co.copy()
+        pa_i = sse.add_point_2d(c + A.normalized() * ra, sketch).slvs_index
+        pb_i = sse.add_point_2d(c + B.normalized() * rb, sketch).slvs_index
+        new = sse.add_ellipse(sse.get(ct_i), sse.get(pa_i), sse.get(pb_i), sketch)
+        new.construction = context.scene.sketcher.use_construction
+        new_i = new.slvs_index
+        for i in (pa_i, pb_i, new_i):
+            ignore_hover(sse.get(i))
+        self.entities = []
+        self.new_path = [sse.get(new_i)]
         refresh(context)
         return True
 
