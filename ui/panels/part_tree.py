@@ -11,7 +11,7 @@ _ICONS = {"pad": "MESH_CUBE", "pocket": "MOD_BOOLEAN",
 
 
 class VIEW3D_PT_sketcher_part_tree(VIEW3D_PT_sketcher_base):
-    """Arbre de construction des pieces OCCT (fork)"""
+    """Build tree of the OCCT parts (fork)"""
 
     bl_label = "Part Tree (OCCT)"
     bl_idname = declarations.Panels.SketcherPartTree

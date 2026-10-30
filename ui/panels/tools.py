@@ -54,10 +54,11 @@ class VIEW3D_PT_sketcher_tools(VIEW3D_PT_sketcher_base):
         for op in declarations.ConstraintOperators:
             col.operator(op, icon_value=icon_manager.get_constraint_icon(op))
 
-        # Fork : automatisation sur le dessin de l'utilisateur
+        # Fork: automation on the user's own drawing
         col = layout.column(align=True)
         col.operator(declarations.Operators.AutoConstraints, icon="AUTO")
         col.operator(declarations.Operators.AutoDimensions, icon="DRIVER_DISTANCE")
+        col.operator(declarations.Operators.FullyConstrain, icon="LOCKED")
         col.operator(declarations.Operators.ArrangeDimensions, icon="ALIGN_JUSTIFY")
 
         layout.separator()

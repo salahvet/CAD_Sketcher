@@ -23,7 +23,7 @@ import operator
 import bpy
 from mathutils import Vector
 
-API_VERSION = (1, 1)
+API_VERSION = (1, 2)
 
 # plans d'Al-Tasrif (VUES) -> plans d'origine de Sketcher
 PLANS = {
@@ -344,18 +344,28 @@ def contraintes_essentielles(esquisse, angle_tangence=8.0, angle_axe=2.0, contex
 
     Ne crée aucune géométrie. Retourne le bilan {nature: [détails]}.
     """
-    from .operators.auto_constraints import contraintes_essentielles as f
+    from .operators.auto_constraints import auto_constraints as f
     context = context or bpy.context
     return f(context, _esquisse(esquisse, context), angle_tangence, angle_axe)
 
 
 def cotes_proposees(esquisse, pas_mm=0.05, context=None):
     """Cotes de base avec les valeurs du dessin arrondies au pas. Retourne (bilan, etat, ddl)."""
-    from .operators.auto_constraints import cotes_proposees as f
+    from .operators.auto_constraints import propose_dimensions as f
     context = context or bpy.context
     return f(context, _esquisse(esquisse, context), pas_mm)
 
 
+def contraindre_totalement(esquisse, pas_mm=0.05, poignees=True, context=None):
+    """Contraint l'esquisse jusqu'a 0 degre de liberte, aux valeurs du dessin (v1.2).
+
+    Retourne (bilan, etat, ddl).
+    """
+    from .operators.auto_constraints import fully_constrain as f
+    context = context or bpy.context
+    return f(context, _esquisse(esquisse, context), pas_mm, poignees)
+
+
 __all__ = ["API_VERSION", "PLANS", "ErreurPont", "evaluer",
            "esquisse_depuis_contour", "executer_gabarit", "mesurer",
-           "contraintes_essentielles", "cotes_proposees"]
+           "contraintes_essentielles", "cotes_proposees", "contraindre_totalement"]

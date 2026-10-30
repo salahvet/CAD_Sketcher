@@ -1,12 +1,20 @@
-"""Fork : « Contraintes essentielles » — contraintes déduites du dessin de l'utilisateur.
+"""Fork: sketch automation tools that work on the user's own drawing.
 
-L'utilisateur dessine ; cet outil ne crée aucune géométrie. Il lit l'esquisse et ajoute
-seulement ce que le dessin montre déjà :
-  - tangence aux jonctions lisses (lignes, arcs, Béziers qui se suivent sans angle) ;
-  - horizontal / vertical pour les lignes presque alignées sur les axes ;
-  - coïncidence des extrémités qui se touchent sans être liées ;
-et retire les contraintes redondantes (un point contraint sur sa propre extrémité).
-Les cotes (distances, rayons, angles) restent à l'utilisateur : ce sont ses choix.
+The user draws; none of these tools create geometry (except a fixed construction
+"Origin" point used as the dimensioning reference). They read the sketch and add
+what the drawing already shows:
+
+- Auto Constraints: tangency at smooth joints, horizontal / vertical lines,
+  touching endpoints; removes redundant constraints.
+- Propose Dimensions: base dimensions using the drawing's values, rounded.
+- Fully Constrain Sketch: Propose Dimensions, then ellipse rotation, curve
+  joints, Bezier handles and any remaining point, until no degree of freedom
+  is left.
+- Arrange Dimensions: places dimensions next to the part, outside, without
+  overlaps.
+
+Every dimension is tried on its own: it is kept only if the solver accepts it
+and it actually removes a degree of freedom.
 """
 import math
 from collections import defaultdict
@@ -20,24 +28,29 @@ from ..model.types import SlvsArc, SlvsBezier, SlvsEllipse, SlvsLine2D
 from ..utilities.view import refresh
 
 
-def _direction_sortante(e, pt):
-    """Direction (unitaire) par laquelle la courbe e quitte son extrémité pt, ou None."""
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _outgoing(e, pt):
+    """Unit direction in which curve e leaves its endpoint pt, or None."""
     co = pt.co
     if isinstance(e, SlvsLine2D):
-        autre = e.p2 if pt == e.p1 else e.p1
-        v = autre.co - co
+        v = (e.p2 if pt == e.p1 else e.p1).co - co
     elif isinstance(e, SlvsBezier):
-        ctrl = e.ctrl1 if pt == e.p1 else e.ctrl2
-        v = ctrl.co - co
-        if v.length < 1e-12:  # poignée confondue : vers l'autre poignée
+        v = (e.ctrl1 if pt == e.p1 else e.ctrl2).co - co
+        if v.length < 1e-12:  # handle on its endpoint: use the other handle
             v = (e.ctrl2 if pt == e.p1 else e.ctrl1).co - co
+    elif isinstance(e, SlvsArc):
+        v = (co - e.ct.co).orthogonal()
+        if v.dot(_arc_midpoint(e) - co) < 0:
+            v = -v
     else:
         return None
     return v.normalized() if v.length > 1e-12 else None
 
 
-def _milieu_arc(arc):
-    """Point au milieu de l'arc, pour orienter sa tangente."""
+def _arc_midpoint(arc):
     c = arc.ct.co
     a1 = math.atan2(*(arc.p1.co - c)[::-1])
     a2 = math.atan2(*(arc.p2.co - c)[::-1])
@@ -49,244 +62,343 @@ def _milieu_arc(arc):
     return c + c.__class__((math.cos(am), math.sin(am))) * r
 
 
-def _sortante(e, pt):
-    if isinstance(e, SlvsArc):
-        v = (pt.co - e.ct.co).orthogonal()
-        if v.dot(_milieu_arc(e) - pt.co) < 0:
-            v = -v
-        return v.normalized() if v.length > 1e-12 else None
-    return _direction_sortante(e, pt)
-
-
-def _deja(constraints, type_, a, b=None):
+def _exists(constraints, type_, a, b=None):
     ia = a.slvs_index
     ib = b.slvs_index if b is not None else None
     for c in constraints.get_list(type_):
         idx = [x.slvs_index for x in c.entities()]
-        if ib is None and ia in idx:
-            return True
-        if ib is not None and ia in idx and ib in idx:
+        if ia in idx and (ib is None or ib in idx):
             return True
     return False
 
 
-def contraintes_essentielles(context, sketch, angle_tangence=8.0, angle_axe=2.0,
-                             tolerance_contact=1e-5, tangence=True, axes=True,
-                             contacts=True, nettoyer=True, dry_run=False):
-    """Ajoute à `sketch` les contraintes essentielles. Retourne un bilan {nature: [détails]}.
+def _state(context, sketch_i):
+    sk = context.scene.sketcher.entities.get(sketch_i)
+    sk.solve(context)
+    return sk.solver_state, getattr(sk, "dof", None)
 
-    angle_tangence : écart max (degrés) pour qu'une jonction soit jugée lisse
-    angle_axe      : écart max (degrés) d'une ligne à l'horizontale / la verticale
-    tolerance_contact : distance (unités Blender) sous laquelle deux extrémités se touchent
-    dry_run        : ne rien modifier, seulement rapporter
+
+def _mm(context):
+    return 1000.0 * (context.scene.unit_settings.scale_length or 1.0)
+
+
+# ---------------------------------------------------------------------------
+# Auto Constraints
+# ---------------------------------------------------------------------------
+
+def auto_constraints(context, sketch, tangent_angle=8.0, axis_angle=2.0,
+                     contact_tolerance=1e-5, tangency=True, axes=True,
+                     contacts=True, cleanup=True, dry_run=False):
+    """Add the constraints the drawing already shows. Returns a report {kind: [details]}.
+
+    tangent_angle: max deviation (degrees) for a joint to count as smooth
+    axis_angle:    max deviation (degrees) of a line from horizontal / vertical
+    contact_tolerance: distance (Blender units) under which two endpoints touch
     """
     S = context.scene.sketcher
-    sse = S.entities
-    cons = S.constraints
-    bilan = defaultdict(list)
+    sse, cons = S.entities, S.constraints
+    report = defaultdict(list)
     sk_i = sketch.slvs_index
 
     segs = [e for e in sse.all
             if getattr(e, "sketch", None) == sketch and not e.is_point()
             and isinstance(e, (SlvsLine2D, SlvsBezier, SlvsArc)) and not e.construction]
 
-    # 1. redondances : un point contraint coïncident avec une entité dont il est l'extrémité
-    if nettoyer:
-        a_retirer = []
+    # 1. redundancy: a point made coincident with an entity it is an endpoint of
+    if cleanup:
+        to_remove = []
         for c in cons.coincident:
             if c.sketch != sketch:
                 continue
             a, b = c.entity1, c.entity2
             pt, ent = (a, b) if a.is_point() else (b, a)
             if pt.is_point() and not ent.is_point() and pt in getattr(ent, "connection_points", lambda: [])():
-                a_retirer.append(c)
-        bilan["redondantes retirées"] = [f"{c.entity1.name} / {c.entity2.name}" for c in a_retirer]
+                to_remove.append(c)
+        report["redundant removed"] = [f"{c.entity1.name} / {c.entity2.name}" for c in to_remove]
         if not dry_run:
-            for c in a_retirer:
+            for c in to_remove:
                 cons.remove(c)
 
-    # 2. contacts : extrémités distinctes au même endroit
-    extremites = {}
+    # 2. contacts: distinct endpoints at the same place
+    ends = {}
     for e in segs:
         for p in e.connection_points():
-            extremites[p.slvs_index] = p
+            ends[p.slvs_index] = p
     if contacts:
-        pts = list(extremites.values())
+        pts = list(ends.values())
         for i, p in enumerate(pts):
             for q in pts[i + 1:]:
-                if (p.co - q.co).length <= tolerance_contact and not _deja(cons, "COINCIDENT", p, q):
-                    bilan["coïncidences"].append(f"{p.name} = {q.name}")
+                if (p.co - q.co).length <= contact_tolerance and not _exists(cons, "COINCIDENT", p, q):
+                    report["coincident"].append(f"{p.name} = {q.name}")
                     if not dry_run:
                         cons.add_coincident(p.slvs_index, q.slvs_index, sketch=sk_i)
 
-    # 3. tangences aux jonctions lisses
-    if tangence:
-        par_point = defaultdict(list)
+    # 3. tangency at smooth joints
+    if tangency:
+        by_point = defaultdict(list)
         for e in segs:
             for p in e.connection_points():
-                par_point[p.slvs_index].append(e)
-        for pi, ents in par_point.items():
+                by_point[p.slvs_index].append(e)
+        for pi, ents in by_point.items():
             if len(ents) != 2:
                 continue
             e1, e2 = ents
             if isinstance(e1, SlvsLine2D) and isinstance(e2, SlvsLine2D):
-                continue  # deux lignes ne sont jamais « tangentes » : angle ou colinéaires
-            pt = extremites[pi]
-            d1, d2 = _sortante(e1, pt), _sortante(e2, pt)
+                continue  # two lines are a corner or collinear, never tangent
+            pt = ends[pi]
+            d1, d2 = _outgoing(e1, pt), _outgoing(e2, pt)
             if d1 is None or d2 is None:
                 continue
-            ecart = math.degrees(math.acos(max(-1.0, min(1.0, -d1.dot(d2)))))
-            if ecart > angle_tangence:
-                bilan["angles laissés vifs"].append(f"{pt.name} ({ecart:.0f}°)")
+            dev = math.degrees(math.acos(max(-1.0, min(1.0, -d1.dot(d2)))))
+            if dev > tangent_angle:
+                report["sharp corners kept"].append(f"{pt.name} ({dev:.0f}°)")
                 continue
-            # la contrainte veut une courbe en premier
-            if isinstance(e1, SlvsLine2D):
+            if isinstance(e1, SlvsLine2D):  # the constraint wants a curve first
                 e1, e2 = e2, e1
-            if _deja(cons, "TANGENT", e1, e2):
+            if _exists(cons, "TANGENT", e1, e2):
                 continue
-            bilan["tangences"].append(f"{e1.name} ~ {e2.name} ({ecart:.1f}°)")
+            report["tangent"].append(f"{e1.name} ~ {e2.name} ({dev:.1f}°)")
             if not dry_run:
                 cons.add_tangent(e1.slvs_index, e2.slvs_index, sketch=sk_i)
 
-    # 4. lignes horizontales / verticales
+    # 4. horizontal / vertical lines
     if axes:
         for e in segs:
             if not isinstance(e, SlvsLine2D):
                 continue
             v = e.p2.co - e.p1.co
-            if v.length < 1e-9 or _deja(cons, "HORIZONTAL", e) or _deja(cons, "VERTICAL", e):
+            if v.length < 1e-9 or _exists(cons, "HORIZONTAL", e) or _exists(cons, "VERTICAL", e):
                 continue
             a = abs(math.degrees(math.atan2(v.y, v.x))) % 180
-            if min(a, 180 - a) <= angle_axe:
-                bilan["horizontales"].append(e.name)
+            if min(a, 180 - a) <= axis_angle:
+                report["horizontal"].append(e.name)
                 if not dry_run:
                     cons.add_horizontal(e.slvs_index, sketch=sk_i)
-            elif abs(a - 90) <= angle_axe:
-                bilan["verticales"].append(e.name)
+            elif abs(a - 90) <= axis_angle:
+                report["vertical"].append(e.name)
                 if not dry_run:
                     cons.add_vertical(e.slvs_index, sketch=sk_i)
 
     if not dry_run:
-        sketch = sse.get(sk_i)
-        sketch.solve(context)
-        bilan["_etat"] = [sketch.solver_state, getattr(sketch, "dof", None)]
-    return dict(bilan)
+        report["_state"] = list(_state(context, sk_i))
+    return dict(report)
 
 
 # ---------------------------------------------------------------------------
-# Cotes proposées
+# Dimensions
 # ---------------------------------------------------------------------------
 
-def _etat(context, sketch_i):
-    sk = context.scene.sketcher.entities.get(sketch_i)
-    sk.solve(context)
-    return sk.solver_state, getattr(sk, "dof", None)
+class _Dimensioner:
+    """Adds distance constraints one at a time, keeping only the useful ones."""
 
+    def __init__(self, context, sketch, step_mm):
+        self.context = context
+        S = context.scene.sketcher
+        self.sse, self.cons = S.entities, S.constraints
+        self.sk_i = sketch.slvs_index
+        self.mm = _mm(context)
+        self.step = step_mm
+        self.report = defaultdict(list)
+        self.state, self.dof = _state(context, self.sk_i)
 
-def cotes_proposees(context, sketch, pas_mm=0.05, longueurs=True, ellipses=True,
-                    position=True, encombrement=True):
-    """Pose les cotes de base avec les valeurs du dessin, arrondies au pas (mm).
+    def sketch(self):
+        return self.sse.get(self.sk_i)
 
-    Chaque cote est essayée seule : si le solveur la refuse (sur-contrainte,
-    redondance), elle est retirée. Retourne {nature: [libellés]} et l'état final.
-    - longueurs : longueur de chaque ligne
-    - ellipses  : les deux demi-axes, et la position du centre
-    - position  : le point le plus proche de l'origine, coté depuis un point
-                  fixe « Origine » (construction) : le dessin est ancré
-    - encombrement : distance horizontale origine -> extrémités gauche et droite
-    Les Béziers gardent leurs poignées libres : la forme reste à l'utilisateur.
-    """
-    S = context.scene.sketcher
-    sse, cons = S.entities, S.constraints
-    sk_i = sketch.slvs_index
-    mm = 1000.0 * (context.scene.unit_settings.scale_length or 1.0)
-    bilan = defaultdict(list)
-    etat0, dof0 = _etat(context, sk_i)
+    def done(self):
+        return self.dof == 0
 
-    def arrondi(v):
-        return round(v * mm / pas_mm) * pas_mm / mm
+    def _round(self, v):
+        return round(v * self.mm / self.step) * self.step / self.mm
 
-    def essayer(libelle, e1, e2=None, align="NONE"):
+    def add(self, label, e1, e2=None, align="NONE"):
+        if self.done():
+            return False
         e1_i = e1 if isinstance(e1, int) else e1.slvs_index
         e2_i = None if e2 is None else (e2 if isinstance(e2, int) else e2.slvs_index)
-        avant = _etat(context, sk_i)
-        c = cons.add_distance(e1_i, e2_i, sketch=sk_i, init=True,
-                              **({"align": align} if align != "NONE" else {}))
-        c.value = arrondi(c.value)
-        etat, dof = _etat(context, sk_i)
-        if etat != "OKAY" or (avant[1] is not None and dof is not None and dof >= avant[1]):
-            cons.remove(c)
-            _etat(context, sk_i)
-            bilan["refusées"].append(libelle)
+        c = self.cons.add_distance(e1_i, e2_i, sketch=self.sk_i, init=True,
+                                   **({"align": align} if align != "NONE" else {}))
+        if abs(c.value) * self.mm < 1e-3:  # zero length: nothing to dimension
+            self.cons.remove(c)
             return False
-        bilan["posées"].append(f"{libelle} = {c.value * mm:g} mm")
+        c.value = self._round(c.value)
+        value = c.value * self.mm
+        if not self._keep(c):
+            self.report["rejected"].append(label)
+            return False
+        self.report["added"].append(f"{label} = {value:g} mm")
         return True
 
-    if etat0 != "OKAY":
-        return {"refusées": [f"esquisse pas résolue ({etat0}) : lancer d'abord Contraintes essentielles"]}, etat0, dof0
+    def _keep(self, c):
+        """Keep constraint c only if the solver stays OKAY and loses a degree of freedom.
 
-    def segs():
-        sk = sse.get(sk_i)
-        return [e for e in sse.all if getattr(e, "sketch", None) == sk and not e.is_point()
-                and not e.construction]
+        Solved twice: a near-degenerate set can pass once and turn redundant once
+        the geometry has converged.
+        """
+        state, dof = _state(self.context, self.sk_i)
+        if state == "OKAY":
+            state, dof = _state(self.context, self.sk_i)
+        if state != "OKAY" or (self.dof is not None and dof is not None and dof >= self.dof):
+            self.cons.remove(c)
+            self.state, self.dof = _state(self.context, self.sk_i)
+            return False
+        self.state, self.dof = state, dof
+        return True
 
-    # point fixe à l'origine (le pivot des planches Al-Tasrif est à l'origine)
-    origine_i = None
-    if position or encombrement:
-        sk = sse.get(sk_i)
-        for p in sse.points2D:
+    def add_axis(self, label, p1, p2, horizontal):
+        """Geometric horizontal / vertical constraint between two points."""
+        if self.done():
+            return False
+        add = self.cons.add_horizontal if horizontal else self.cons.add_vertical
+        c = add(p1, p2, sketch=self.sk_i)
+        if not self._keep(c):
+            self.report["rejected"].append(label)
+            return False
+        self.report["added"].append(label)
+        return True
+
+    def segs(self):
+        sk = self.sketch()
+        return [e for e in self.sse.all if getattr(e, "sketch", None) == sk
+                and not e.is_point() and not e.construction]
+
+    def origin(self):
+        """Fixed construction point at the origin (the Al-Tasrif pivot), created if needed."""
+        sk = self.sketch()
+        for p in self.sse.points2D:
             if p.sketch == sk and p.fixed and p.co.length < 1e-9:
-                origine_i = p.slvs_index
-                break
-        if origine_i is None:
-            p = sse.add_point_2d((0.0, 0.0), sse.get(sk_i), fixed=True, construction=True)
-            p.name = "Origine"
-            origine_i = p.slvs_index
-            _etat(context, sk_i)
+                return p.slvs_index
+        p = self.sse.add_point_2d((0.0, 0.0), sk, fixed=True, construction=True)
+        p.name = "Origin"
+        i = p.slvs_index
+        self.state, self.dof = _state(self.context, self.sk_i)
+        return i
 
-    if longueurs:
-        for e in [e.slvs_index for e in segs() if isinstance(e, SlvsLine2D)]:
-            essayer(f"longueur {sse.get(e).name}", e)
-
-    if ellipses:
-        for e_i in [e.slvs_index for e in segs() if isinstance(e, SlvsEllipse)]:
-            el = sse.get(e_i)
-            ct, pa, pb = el.ct.slvs_index, el.pa.slvs_index, el.pb.slvs_index
-            essayer(f"{el.name} demi-axe a", ct, pa)
-            essayer(f"{el.name} demi-axe b", ct, pb)
-            if origine_i is not None:
-                essayer(f"{el.name} centre (horizontal)", origine_i, ct, "HORIZONTAL")
-                essayer(f"{el.name} centre (vertical)", origine_i, ct, "VERTICAL")
-
-    if origine_i is not None:
-        extremites = {}
-        for e in segs():
+    def endpoints(self):
+        ends = {}
+        for e in self.segs():
             if isinstance(e, SlvsEllipse):
                 continue
             for p in e.connection_points():
-                extremites[p.slvs_index] = p.co.copy()
-        if extremites and position:
-            proche = min(extremites, key=lambda i: extremites[i].length)
-            n = sse.get(proche).name
-            essayer(f"position {n} (horizontal)", origine_i, proche, "HORIZONTAL")
-            essayer(f"position {n} (vertical)", origine_i, proche, "VERTICAL")
-        if extremites and encombrement:
-            for i in {min(extremites, key=lambda i: extremites[i].x),
-                      max(extremites, key=lambda i: extremites[i].x)}:
-                essayer(f"encombrement {sse.get(i).name}", origine_i, i, "HORIZONTAL")
+                ends[p.slvs_index] = p.co.copy()
+        return ends
 
-    etat, dof = _etat(context, sk_i)
-    ranger_cotes(context, sse.get(sk_i))
-    return dict(bilan), etat, dof
+
+def propose_dimensions(context, sketch, step_mm=0.05, lengths=True, ellipses=True,
+                       anchor=True, overall=True, arrange=True):
+    """Base dimensions with the drawing's values, rounded to step_mm.
+
+    lengths:  length of every line
+    ellipses: both semi-axes and the centre position
+    anchor:   point nearest the origin, dimensioned from a fixed "Origin" point
+    overall:  horizontal distance origin -> leftmost and rightmost endpoints
+    Bezier handles stay free: the shape is the user's.
+    Returns (report, solver state, degrees of freedom).
+    """
+    d = _Dimensioner(context, sketch, step_mm)
+    if d.state != "OKAY":
+        return {"rejected": [f"sketch not solved ({d.state}): run Auto Constraints first"]}, d.state, d.dof
+
+    origin = d.origin() if (anchor or overall or ellipses) else None
+
+    if lengths:
+        for e in [e.slvs_index for e in d.segs() if isinstance(e, SlvsLine2D)]:
+            d.add(f"length {d.sse.get(e).name}", e)
+
+    if ellipses:
+        for e_i in [e.slvs_index for e in d.segs() if isinstance(e, SlvsEllipse)]:
+            el = d.sse.get(e_i)
+            ct, pa, pb = el.ct.slvs_index, el.pa.slvs_index, el.pb.slvs_index
+            d.add(f"{el.name} semi-axis a", ct, pa)
+            d.add(f"{el.name} semi-axis b", ct, pb)
+            d.add(f"{el.name} centre (horizontal)", origin, ct, "HORIZONTAL")
+            d.add(f"{el.name} centre (vertical)", origin, ct, "VERTICAL")
+
+    ends = d.endpoints()
+    if ends and anchor:
+        near = min(ends, key=lambda i: ends[i].length)
+        n = d.sse.get(near).name
+        d.add(f"position {n} (horizontal)", origin, near, "HORIZONTAL")
+        d.add(f"position {n} (vertical)", origin, near, "VERTICAL")
+    if ends and overall:
+        for i in {min(ends, key=lambda i: ends[i].x), max(ends, key=lambda i: ends[i].x)}:
+            d.add(f"overall {d.sse.get(i).name}", origin, i, "HORIZONTAL")
+
+    state, dof = _state(context, d.sk_i)
+    if arrange:
+        arrange_dimensions(context, d.sketch())
+    return dict(d.report), state, dof
+
+
+def fully_constrain(context, sketch, step_mm=0.05, lock_handles=True):
+    """Constrain the sketch until no degree of freedom is left, with the drawing's values.
+
+    Order: base dimensions, ellipse rotation, curve joints (from the origin),
+    Bezier handles (length, then direction), then any point still free.
+    Returns (report, solver state, degrees of freedom).
+    """
+    report, state, dof = propose_dimensions(context, sketch, step_mm, arrange=False)
+    if state != "OKAY":
+        return report, state, dof
+    d = _Dimensioner(context, sketch, step_mm)
+    for k, v in report.items():
+        d.report[k] += v
+    origin = d.origin()
+
+    # 1. ellipse rotation: offset of the first axis end across the axis direction
+    for e_i in [e.slvs_index for e in d.segs() if isinstance(e, SlvsEllipse)]:
+        el = d.sse.get(e_i)
+        A, _B = el.axes()
+        across = "VERTICAL" if abs(A.x) >= abs(A.y) else "HORIZONTAL"
+        d.add(f"{el.name} rotation", el.ct.slvs_index, el.pa.slvs_index, across)
+
+    # 2. joints between curves, from the origin
+    for i in list(d.endpoints()):
+        n = d.sse.get(i).name
+        d.add(f"joint {n} (horizontal)", origin, i, "HORIZONTAL")
+        d.add(f"joint {n} (vertical)", origin, i, "VERTICAL")
+
+    # 3. Bezier handles: length from their endpoint, then direction
+    if lock_handles:
+        handles = []
+        for e in d.segs():
+            if isinstance(e, SlvsBezier):
+                handles += [(e.p1.slvs_index, e.ctrl1.slvs_index), (e.p2.slvs_index, e.ctrl2.slvs_index)]
+        for end_i, ctrl_i in handles:
+            n = d.sse.get(ctrl_i).name
+            d.add(f"handle {n} (length)", end_i, ctrl_i)
+            # direction: the smaller component (length + larger component is
+            # degenerate when the handle is nearly on an axis)
+            v = d.sse.get(ctrl_i).co - d.sse.get(end_i).co
+            small_is_x = abs(v.x) <= abs(v.y)
+            small = abs(v.x) if small_is_x else abs(v.y)
+            if small * d.mm < d.step:
+                # handle on an axis: say so geometrically
+                d.add_axis(f"handle {n} ({'vertical' if small_is_x else 'horizontal'})",
+                           end_i, ctrl_i, horizontal=not small_is_x)
+            else:
+                d.add(f"handle {n} ({'horizontal' if small_is_x else 'vertical'} offset)",
+                      end_i, ctrl_i, "HORIZONTAL" if small_is_x else "VERTICAL")
+
+    # 4. anything still free: from the origin
+    sk = d.sketch()
+    for i in [p.slvs_index for p in d.sse.points2D if p.sketch == sk and not p.fixed]:
+        if d.done():
+            break
+        n = d.sse.get(i).name
+        d.add(f"point {n} (horizontal)", origin, i, "HORIZONTAL")
+        d.add(f"point {n} (vertical)", origin, i, "VERTICAL")
+
+    state, dof = _state(context, d.sk_i)
+    arrange_dimensions(context, d.sketch())
+    return dict(d.report), state, dof
 
 
 # ---------------------------------------------------------------------------
-# Rangement des cotes
+# Arrange Dimensions
 # ---------------------------------------------------------------------------
 
-def _contour_echantillons(sse, sketch):
-    """Points de la vraie géométrie (courbes échantillonnées, sans les poignées)."""
-    import math
+def _outline_samples(sse, sketch):
+    """Points of the real geometry (sampled curves, handles excluded)."""
     from mathutils import Vector
     pts = []
     for e in sse.all:
@@ -297,7 +409,8 @@ def _contour_echantillons(sse, sketch):
         elif isinstance(e, SlvsBezier):
             a, b, c, d = e.p1.co, e.ctrl1.co, e.ctrl2.co, e.p2.co
             for k in range(17):
-                t = k / 16; u = 1 - t
+                t = k / 16
+                u = 1 - t
                 pts.append(u ** 3 * a + 3 * u * u * t * b + 3 * u * t * t * c + t ** 3 * d)
         elif isinstance(e, SlvsEllipse):
             A, B = e.axes()
@@ -311,188 +424,211 @@ def _contour_echantillons(sse, sketch):
     return pts
 
 
-def ranger_cotes(context, sketch, ecart=None, pas=None):
-    """Place les cotes de distance près de l'esquisse, côté extérieur, comme sur un plan.
+def arrange_dimensions(context, sketch, gap=None, spacing=None):
+    """Place distance dimensions next to the sketch, outside, like on a drawing.
 
-    - cotes horizontales / verticales : sous / au-dessus / à côté de la pièce, à `ecart`
-      de son bord ; une rangée de plus seulement si deux cotes se chevauchent ;
-    - cotes obliques ou intérieures (demi-axes, ligne inclinée) : juste à côté de
-      l'élément coté, côté extérieur.
-    ecart, pas en unités Blender ; par défaut 4 % et 3,5 % de la diagonale de la pièce.
-    Ne change aucune valeur, seulement l'affichage. Retourne le nombre de cotes rangées.
+    - horizontal / vertical dimensions: just past the edge of the part, on the
+      nearer side; a new row only when two dimensions overlap;
+    - oblique or inner dimensions (semi-axes, slanted line): next to the element.
+    gap, spacing in Blender units; default 4 % and 3.5 % of the part's diagonal.
+    Changes no value, only the display. Returns the number of dimensions placed.
     """
     from mathutils import Vector
 
     S = context.scene.sketcher
     sse = S.entities
     ui = context.preferences.system.ui_scale or 1.0
-    pts = _contour_echantillons(sse, sketch)
+    pts = _outline_samples(sse, sketch)
     if not pts:
         return 0
     lo = Vector((min(p.x for p in pts), min(p.y for p in pts)))
     hi = Vector((max(p.x for p in pts), max(p.y for p in pts)))
     diag = max((hi - lo).length, 1e-6)
-    ecart = ecart or 0.04 * diag
-    pas = pas or 0.035 * diag
-    M = sketch.wp.matrix_basis
-    Mi = M.inverted()
+    gap = gap or 0.04 * diag
+    spacing = spacing or 0.035 * diag
+    Mi = sketch.wp.matrix_basis.inverted()
     centre = (lo + hi) / 2
 
     def local(v3):
         v = Mi @ v3
         return Vector((v.x, v.y))
 
-    rangees = defaultdict(list)  # (axe, sens) -> [(debut, fin, cote)]
-    total = 0
-    cotes = [c for c in S.constraints.distance if c.sketch == sketch]
+    rows = defaultdict(list)  # (axis, side) -> [(start, end, row)]
+    count = 0
     infos = []
-    for c in cotes:
+    for c in [c for c in S.constraints.distance if c.sketch == sketch]:
         B = c.matrix_basis()
         o3 = B @ Vector((0, 0, 0))
-        ech = ((B @ Vector((0, 1, 0))) - o3).length
-        if ech < 1e-12:
+        scale = ((B @ Vector((0, 1, 0))) - o3).length
+        if scale < 1e-12:
             continue
         o = local(o3)
         xd = local(B @ Vector((1, 0, 0))) - o
         yd = local(B @ Vector((0, 1, 0))) - o
         if xd.length < 1e-12 or yd.length < 1e-12:
             continue
-        xd.normalize(); yd.normalize()
-        sens = 1.0 if (o + yd - centre).length >= (o - yd - centre).length else -1.0
-        n = yd * sens
-        horiz = abs(xd.x) > 0.999
-        vert = abs(xd.y) > 0.999
-        demi = abs(c.value) / 2
-        infos.append((c, o, xd, n, sens, ech, horiz, vert, demi))
+        xd.normalize()
+        yd.normalize()
+        side = 1.0 if (o + yd - centre).length >= (o - yd - centre).length else -1.0
+        horiz, vert = abs(xd.x) > 0.999, abs(xd.y) > 0.999
+        infos.append((c, o, yd * side, side, scale, horiz, vert, abs(c.value) / 2))
 
-    # 1. cotes d'axe : rangées au bord de la pièce, sans chevauchement
-    for c, o, xd, n, sens, ech, horiz, vert, demi in sorted(
-            [t for t in infos if t[6] or t[7]], key=lambda t: abs(t[0].value)):
-        axe = "H" if horiz else "V"
-        pos_o = o.y if horiz else o.x
-        debut = (o.x if horiz else o.y) - demi
-        fin = (o.x if horiz else o.y) + demi
-        marge = 0.5 * pas
+    # 1. axis dimensions: rows past the edge of the part, no overlaps
+    for c, o, n, side, scale, horiz, vert, half in sorted(
+            [t for t in infos if t[5] or t[6]], key=lambda t: abs(t[0].value)):
+        axis = "H" if horiz else "V"
+        pos = o.y if horiz else o.x
+        start = (o.x if horiz else o.y) - half
+        end = (o.x if horiz else o.y) + half
+        margin = 0.5 * spacing
 
-        def placer(nn):
-            cote_bord = (lo.y if nn.y < 0 else hi.y) if horiz else (lo.x if nn.x < 0 else hi.x)
-            cle = (axe, round(nn.x), round(nn.y))
-            niveau = 0
-            while any(r == niveau and not (fin + marge < d0 or debut - marge > f0)
-                      for d0, f0, r in rangees[cle]):
-                niveau += 1
-            return abs(cote_bord - pos_o) + ecart + niveau * pas, cle, niveau
+        def place(nn):
+            edge = (lo.y if nn.y < 0 else hi.y) if horiz else (lo.x if nn.x < 0 else hi.x)
+            key = (axis, round(nn.x), round(nn.y))
+            row = 0
+            while any(r == row and not (end + margin < s0 or start - margin > e0)
+                      for s0, e0, r in rows[key]):
+                row += 1
+            return abs(edge - pos) + gap + row * spacing, key, row
 
-        # les deux côtés possibles : on garde celui où la cote tombe le plus près
-        options = [(placer(n), sens), (placer(-n), -sens)]
-        (d, cle, niveau), sens = min(options, key=lambda t: t[0][0])
-        rangees[cle].append((debut, fin, niveau))
-        c.draw_offset = sens * d / ech / ui
+        # both sides are possible: keep the one where the dimension lands closer
+        (dist, key, row), side = min([(place(n), side), (place(-n), -side)], key=lambda t: t[0][0])
+        rows[key].append((start, end, row))
+        c.draw_offset = side * dist / scale / ui
         c.draw_outset = 0.0
-        total += 1
+        count += 1
 
-    # 2. cotes obliques / intérieures : à côté de l'élément
-    for c, o, xd, n, sens, ech, horiz, vert, demi in [t for t in infos if not (t[6] or t[7])]:
-        c.draw_offset = sens * ecart / ech / ui
+    # 2. oblique / inner dimensions: next to the element
+    for c, o, n, side, scale, horiz, vert, half in [t for t in infos if not (t[5] or t[6])]:
+        c.draw_offset = side * gap / scale / ui
         c.draw_outset = 0.0
-        total += 1
-    return total
+        count += 1
+    return count
 
 
-class View3D_OT_slvs_arrange_dimensions(Operator):
-    """Rapproche les cotes de l'esquisse : côté extérieur, à distance régulière, cotes parallèles étagées"""
+# ---------------------------------------------------------------------------
+# Operators
+# ---------------------------------------------------------------------------
 
-    bl_idname = Operators.ArrangeDimensions
-    bl_label = "Ranger les cotes"
+def _dof_text(state, dof):
+    return f"solver {state}, {dof} degree(s) of freedom left"
+
+
+class View3D_OT_slvs_auto_constraints(Operator):
+    """Add the constraints your drawing already shows: tangency at smooth joints, horizontal / vertical lines, touching endpoints. Removes redundant constraints. Creates no geometry and no dimension"""
+
+    bl_idname = Operators.AutoConstraints
+    bl_label = "Auto Constraints"
     bl_options = {"REGISTER", "UNDO"}
 
-    ecart_mm: FloatProperty(name="Écart (mm)", default=0.0, min=0.0, max=200.0,
-                            description="Distance entre la pièce et la première cote (0 : automatique)")
-    pas_mm: FloatProperty(name="Pas (mm)", default=0.0, min=0.0, max=200.0,
-                          description="Espacement entre cotes parallèles (0 : automatique)")
+    tangent_angle: FloatProperty(name="Smooth Joint Under", default=8.0, min=0.5, max=30.0,
+                                 description="Deviation (degrees) under which a joint becomes tangent")
+    axis_angle: FloatProperty(name="Axis Line Under", default=2.0, min=0.0, max=10.0,
+                              description="Deviation (degrees) under which a line becomes horizontal / vertical")
+    tangency: BoolProperty(name="Tangency", default=True)
+    axes: BoolProperty(name="Horizontal / Vertical", default=True)
+    contacts: BoolProperty(name="Touching Endpoints", default=True)
+    cleanup: BoolProperty(name="Remove Redundant", default=True)
 
     @classmethod
     def poll(cls, context):
         return context.scene.sketcher.active_sketch is not None
 
     def execute(self, context: Context):
-        mm = 1000.0 * (context.scene.unit_settings.scale_length or 1.0)
-        n = ranger_cotes(context, context.scene.sketcher.active_sketch,
-                         self.ecart_mm / mm or None, self.pas_mm / mm or None)
-        self.report({"INFO"}, f"{n} cote(s) rangée(s)")
+        report = auto_constraints(
+            context, context.scene.sketcher.active_sketch, self.tangent_angle, self.axis_angle,
+            tangency=self.tangency, axes=self.axes, contacts=self.contacts, cleanup=self.cleanup,
+        )
+        state, dof = report.pop("_state", (None, None))
+        summary = ", ".join(f"{len(v)} {k}" for k, v in report.items() if v and k != "sharp corners kept")
+        sharp = len(report.get("sharp corners kept", []))
+        self.report({"INFO" if state in ("OKAY", None) else "WARNING"},
+                    f"{summary or 'nothing to add'}; {sharp} sharp corner(s) kept; {_dof_text(state, dof)}")
         refresh(context)
         return {"FINISHED"}
 
 
 class View3D_OT_slvs_auto_dimensions(Operator):
-    """Pose les cotes de base avec les valeurs de votre dessin (arrondies) : longueurs des lignes,
-demi-axes et centre des ellipses, ancrage sur l'origine, encombrement. Une cote refusée par
-le solveur est retirée. Modifiez ensuite les valeurs : le dessin suit"""
+    """Add base dimensions with your drawing's values (rounded): line lengths, ellipse semi-axes and centre, anchor on the origin, overall length. A dimension the solver rejects is removed. Then edit the values: the drawing follows"""
 
     bl_idname = Operators.AutoDimensions
-    bl_label = "Cotes proposées"
+    bl_label = "Propose Dimensions"
     bl_options = {"REGISTER", "UNDO"}
 
-    pas_mm: FloatProperty(name="Arrondi (mm)", default=0.05, min=0.001, max=5.0)
-    longueurs: BoolProperty(name="Longueurs des lignes", default=True)
+    step_mm: FloatProperty(name="Rounding (mm)", default=0.05, min=0.001, max=5.0)
+    lengths: BoolProperty(name="Line Lengths", default=True)
     ellipses: BoolProperty(name="Ellipses", default=True)
-    position: BoolProperty(name="Ancrage sur l'origine", default=True)
-    encombrement: BoolProperty(name="Encombrement", default=True)
+    anchor: BoolProperty(name="Anchor on Origin", default=True)
+    overall: BoolProperty(name="Overall Length", default=True)
 
     @classmethod
     def poll(cls, context):
         return context.scene.sketcher.active_sketch is not None
 
     def execute(self, context: Context):
-        sketch = context.scene.sketcher.active_sketch
-        bilan, etat, dof = cotes_proposees(context, sketch, self.pas_mm, self.longueurs,
-                                           self.ellipses, self.position, self.encombrement)
-        poses, refus = len(bilan.get("posées", [])), len(bilan.get("refusées", []))
-        self.report({"INFO" if etat == "OKAY" else "WARNING"},
-                    f"{poses} cote(s) posée(s), {refus} refusée(s) ; solveur {etat}, {dof} degré(s) de liberté")
+        report, state, dof = propose_dimensions(
+            context, context.scene.sketcher.active_sketch, self.step_mm,
+            self.lengths, self.ellipses, self.anchor, self.overall)
+        added, rejected = len(report.get("added", [])), len(report.get("rejected", []))
+        self.report({"INFO" if state == "OKAY" else "WARNING"},
+                    f"{added} dimension(s) added, {rejected} rejected; {_dof_text(state, dof)}")
         refresh(context)
         return {"FINISHED"}
 
 
-class View3D_OT_slvs_auto_constraints(Operator):
-    """Ajoute les contraintes que le dessin montre déjà : tangences aux jonctions lisses,
-lignes horizontales / verticales, extrémités en contact ; retire les redondances.
-Ne crée aucune géométrie et ne pose aucune cote"""
+class View3D_OT_slvs_fully_constrain(Operator):
+    """Constrain the sketch completely with your drawing's values (rounded): base dimensions, ellipse rotation, curve joints, Bezier handles, then any point still free. Only dimensions the solver accepts are kept"""
 
-    bl_idname = Operators.AutoConstraints
-    bl_label = "Contraintes essentielles"
+    bl_idname = Operators.FullyConstrain
+    bl_label = "Fully Constrain Sketch"
     bl_options = {"REGISTER", "UNDO"}
 
-    angle_tangence: FloatProperty(name="Jonction lisse sous", default=8.0, min=0.5, max=30.0,
-                                  description="Écart (degrés) en dessous duquel une jonction devient tangente")
-    angle_axe: FloatProperty(name="Ligne d'axe sous", default=2.0, min=0.0, max=10.0,
-                             description="Écart (degrés) en dessous duquel une ligne devient horizontale / verticale")
-    tangence: BoolProperty(name="Tangences", default=True)
-    axes: BoolProperty(name="Horizontal / vertical", default=True)
-    contacts: BoolProperty(name="Extrémités en contact", default=True)
-    nettoyer: BoolProperty(name="Retirer les redondances", default=True)
+    step_mm: FloatProperty(name="Rounding (mm)", default=0.05, min=0.001, max=5.0)
+    lock_handles: BoolProperty(name="Lock Bezier Handles", default=True,
+                               description="Dimension the Bezier handles too (otherwise the handles remain free)")
 
     @classmethod
     def poll(cls, context):
         return context.scene.sketcher.active_sketch is not None
 
     def execute(self, context: Context):
-        sketch = context.scene.sketcher.active_sketch
-        bilan = contraintes_essentielles(
-            context, sketch, self.angle_tangence, self.angle_axe,
-            tangence=self.tangence, axes=self.axes, contacts=self.contacts, nettoyer=self.nettoyer,
-        )
-        etat, dof = bilan.pop("_etat", (None, None))
-        resume = ", ".join(f"{len(v)} {k}" for k, v in bilan.items() if v and k != "angles laissés vifs")
-        vifs = len(bilan.get("angles laissés vifs", []))
-        self.report({"INFO" if etat in ("OKAY", None) else "WARNING"},
-                    f"{resume or 'rien à ajouter'} ; {vifs} angle(s) laissé(s) vif(s) ; "
-                    f"solveur {etat}, {dof} degré(s) de liberté")
+        report, state, dof = fully_constrain(
+            context, context.scene.sketcher.active_sketch, self.step_mm, self.lock_handles)
+        added, rejected = len(report.get("added", [])), len(report.get("rejected", []))
+        level = "INFO" if state == "OKAY" and dof == 0 else "WARNING"
+        self.report({level}, f"{added} dimension(s) added, {rejected} rejected; {_dof_text(state, dof)}")
         refresh(context)
         return {"FINISHED"}
 
 
-register, unregister = register_classes_factory(
-    (View3D_OT_slvs_auto_constraints, View3D_OT_slvs_auto_dimensions,
-     View3D_OT_slvs_arrange_dimensions)
-)
+class View3D_OT_slvs_arrange_dimensions(Operator):
+    """Bring the sketch's dimensions close to the part: outside, evenly spaced, parallel dimensions stacked without overlaps"""
+
+    bl_idname = Operators.ArrangeDimensions
+    bl_label = "Arrange Dimensions"
+    bl_options = {"REGISTER", "UNDO"}
+
+    gap_mm: FloatProperty(name="Gap (mm)", default=0.0, min=0.0, max=200.0,
+                          description="Distance between the part and the first dimension (0: automatic)")
+    spacing_mm: FloatProperty(name="Spacing (mm)", default=0.0, min=0.0, max=200.0,
+                              description="Spacing between stacked parallel dimensions (0: automatic)")
+
+    @classmethod
+    def poll(cls, context):
+        return context.scene.sketcher.active_sketch is not None
+
+    def execute(self, context: Context):
+        mm = _mm(context)
+        n = arrange_dimensions(context, context.scene.sketcher.active_sketch,
+                               self.gap_mm / mm or None, self.spacing_mm / mm or None)
+        self.report({"INFO"}, f"{n} dimension(s) arranged")
+        refresh(context)
+        return {"FINISHED"}
+
+
+register, unregister = register_classes_factory((
+    View3D_OT_slvs_auto_constraints,
+    View3D_OT_slvs_auto_dimensions,
+    View3D_OT_slvs_fully_constrain,
+    View3D_OT_slvs_arrange_dimensions,
+))

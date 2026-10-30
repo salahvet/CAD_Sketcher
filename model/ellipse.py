@@ -25,19 +25,18 @@ KAPPA = 4.0 / 3.0 * math.tan(math.pi / 8.0)
 
 
 class SlvsEllipse(Entity2D, PropertyGroup):
-    """Ellipse du croquis (fork).
+    """Sketch ellipse (fork).
 
-    SolveSpace n'a pas d'entite ellipse : comme pour SlvsBezier, la forme
-    est portee par de vrais points du croquis, ce qui rend toutes les
-    contraintes de points utilisables sur elle.
+    SolveSpace has no ellipse entity: as with SlvsBezier, the shape is carried
+    by real sketch points, so every point constraint can be used on it.
 
-        ct : centre
-        pa : extremite du premier demi-axe
-        pb : extremite du second demi-axe
+        ct: centre
+        pa: end of the first semi-axis
+        pb: end of the second semi-axis
 
-    Une contrainte interne garde (ct, pa) perpendiculaire a (ct, pb) :
-    6 parametres - 1 = 5 degres de liberte, ceux d'une ellipse
-    (centre, deux rayons, orientation).
+    An internal constraint keeps (ct, pa) perpendicular to (ct, pb):
+    6 parameters - 1 = 5 degrees of freedom, those of an ellipse
+    (centre, two radii, orientation).
     """
 
     @classmethod
