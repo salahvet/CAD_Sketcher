@@ -23,7 +23,7 @@ import operator
 import bpy
 from mathutils import Vector
 
-API_VERSION = (1, 0)
+API_VERSION = (1, 1)
 
 # plans d'Al-Tasrif (VUES) -> plans d'origine de Sketcher
 PLANS = {
@@ -326,5 +326,36 @@ def mesurer(piece, context=None):
     }
 
 
+# ---------------------------------------------------------------------------
+# Automatisation sur un dessin existant (v1.1)
+# ---------------------------------------------------------------------------
+
+def _esquisse(esquisse, context):
+    if isinstance(esquisse, str):
+        for s in context.scene.sketcher.entities.sketches:
+            if s.name == esquisse:
+                return s
+        raise ErreurPont(f"esquisse introuvable : {esquisse!r}")
+    return esquisse
+
+
+def contraintes_essentielles(esquisse, angle_tangence=8.0, angle_axe=2.0, context=None):
+    """Tangences aux jonctions lisses, horizontal / vertical, contacts ; retire les redondances.
+
+    Ne crée aucune géométrie. Retourne le bilan {nature: [détails]}.
+    """
+    from .operators.auto_constraints import contraintes_essentielles as f
+    context = context or bpy.context
+    return f(context, _esquisse(esquisse, context), angle_tangence, angle_axe)
+
+
+def cotes_proposees(esquisse, pas_mm=0.05, context=None):
+    """Cotes de base avec les valeurs du dessin arrondies au pas. Retourne (bilan, etat, ddl)."""
+    from .operators.auto_constraints import cotes_proposees as f
+    context = context or bpy.context
+    return f(context, _esquisse(esquisse, context), pas_mm)
+
+
 __all__ = ["API_VERSION", "PLANS", "ErreurPont", "evaluer",
-           "esquisse_depuis_contour", "executer_gabarit", "mesurer"]
+           "esquisse_depuis_contour", "executer_gabarit", "mesurer",
+           "contraintes_essentielles", "cotes_proposees"]

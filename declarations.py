@@ -54,6 +54,8 @@ class Operators(str, Enum):
     AddWorkPlaneFace = "view3d.slvs_add_workplane_face"
     AlignWorkplaneCursor = "view3d.slvs_align_workplane_cursor"
     AlignView = "view3d.slvs_align_view"
+    AutoConstraints = "view3d.slvs_auto_constraints"
+    AutoDimensions = "view3d.slvs_auto_dimensions"
     BatchSet = "view3d.slvs_batch_set"
     ContextMenu = "view3d.slvs_context_menu"
     Copy = "view3d.slvs_copy"

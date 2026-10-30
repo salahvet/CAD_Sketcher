@@ -47,6 +47,7 @@ modules = [
     "add_geometric_constraints",
     "align_workplane",
     "align_view",
+    "auto_constraints",
     "modifiers",
     "move",
     "rotate",

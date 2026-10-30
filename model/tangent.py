@@ -79,13 +79,17 @@ class SlvsTangent(GenericConstraint, PropertyGroup):
                 return None
 
             if len(beziers) == 2:
-                # spline <-> spline : ctrl_a, jonction, ctrl_b alignés
+                # spline <-> spline : ctrl_a, jonction, ctrl_b alignés.
+                # NB : coincident(point, ligne) se comporte ici comme un
+                # point-point (la jonction filait sur ctrl_a) ; on exprime
+                # l'alignement par le parallelisme des deux poignees.
                 ca = _bezier_ctrl_at(e1, point)
                 cb = _bezier_ctrl_at(e2, point)
                 if ca is None or cb is None:
                     return None
-                line = solvesys.add_line_2d(group, ca.py_data, cb.py_data, wp)
-                return solvesys.coincident(group, point.py_data, line, wp)
+                ha = solvesys.add_line_2d(group, ca.py_data, point.py_data, wp)
+                hb = solvesys.add_line_2d(group, point.py_data, cb.py_data, wp)
+                return solvesys.parallel(group, ha, hb, wp)
 
             bez = beziers[0]
             other = e2 if bez == e1 else e1
@@ -94,8 +98,10 @@ class SlvsTangent(GenericConstraint, PropertyGroup):
                 return None
 
             if other.is_line():
-                # spline <-> ligne : le ctrl adjacent sur le prolongement de la ligne
-                return solvesys.coincident(group, ctrl.py_data, other.py_data, wp)
+                # spline <-> ligne : la poignee adjacente parallele a la ligne
+                # (meme raison que ci-dessus : pas de coincident point-ligne)
+                handle = solvesys.add_line_2d(group, point.py_data, ctrl.py_data, wp)
+                return solvesys.parallel(group, handle, other.py_data, wp)
 
             if type(other) in (SlvsCircle, SlvsArc):
                 # spline <-> arc/cercle : poignée perpendiculaire au rayon

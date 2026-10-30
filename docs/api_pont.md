@@ -1,4 +1,4 @@
-# Pont Al-Tasrif → CAD Sketcher (API v1.0)
+# Pont Al-Tasrif → CAD Sketcher (API v1.1)
 
 Al-Tasrif stocke (références, données de modélisation, gabarits). Sketcher exécute.
 Le seul point d'entrée est le module `api.py` de Sketcher :
@@ -19,6 +19,8 @@ Toutes les longueurs sont en **mm**, les angles en **degrés**. La conversion ve
 | `executer_gabarit(gabarit, parametres=None, piece=None)` | esquisses + recette OCCT + recalcul | `{piece, objet, esquisses, parametres}` |
 | `mesurer(piece)` | dimensions au format `fiche.json` | `{dimensions_mm, boite_mm, volume_mm3}` |
 | `evaluer(expr, parametres)` | expression arithmétique sûre | nombre |
+| `contraintes_essentielles(esquisse)` | tangences aux jonctions lisses, H/V, contacts, redondances retirées (v1.1) | bilan |
+| `cotes_proposees(esquisse, pas_mm=0.05)` | cotes de base aux valeurs du dessin, arrondies (v1.1) | (bilan, état, ddl) |
 
 Toute donnée invalide lève `api.ErreurPont`, avec un message lisible.
 
