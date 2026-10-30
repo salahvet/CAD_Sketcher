@@ -23,7 +23,7 @@ import operator
 import bpy
 from mathutils import Vector
 
-API_VERSION = (1, 2)
+API_VERSION = (1, 3)
 
 # plans d'Al-Tasrif (VUES) -> plans d'origine de Sketcher
 PLANS = {
@@ -105,7 +105,7 @@ def evaluer(expr, parametres):
 def _substituer(obj, parametres):
     """Remplace recursivement les expressions par leur valeur."""
     if isinstance(obj, dict):
-        return {k: (v if k in ("type", "nom", "op", "sketch", "select", "plan")
+        return {k: (v if k in ("type", "nom", "op", "sketch", "select", "plan", "kind", "direction", "axis")
                     else _substituer(v, parametres)) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [_substituer(v, parametres) for v in obj]
@@ -269,16 +269,25 @@ def executer_gabarit(gabarit, parametres=None, piece=None, context=None):
     for f in gabarit.get("fonctions") or []:
         f = _substituer(f, vals)
         op = f.get("op")
-        if op not in ("pad", "pocket", "fillet", "chamfer"):
+        if op not in ("pad", "pocket", "fillet", "chamfer", "pattern"):
             raise ErreurPont(f"unsupported feature: {op!r}")
         f = dict(f)
         if "sketch" in f:
             if f["sketch"] not in noms:
                 raise ErreurPont(f"unknown sketch: {f['sketch']!r}")
             f["sketch"] = noms[f["sketch"]]
-        for cle in ("depth", "radius"):  # mm -> unites Blender
+        for cle in ("depth", "radius", "spacing"):  # mm -> unites Blender
             if cle in f:
                 f[cle] = float(f[cle]) * k
+        if op == "pattern":
+            # « feature » : numero (1, 2, ...) de la fonction repetee dans la liste du gabarit
+            n = int(f.get("feature", len(recette)))
+            if not 1 <= n <= len(recette) or recette[n - 1]["op"] not in ("pad", "pocket"):
+                raise ErreurPont(f"pattern: feature {n} is not a pad or a pocket")
+            f["feature"] = n - 1
+            f["count"] = int(round(float(f.get("count", 2))))
+            if "center" in f:
+                f["center"] = [float(c) * k for c in f["center"]]
         recette.append(f)
 
     recettes = occt_ops.get_recipes(context.scene)

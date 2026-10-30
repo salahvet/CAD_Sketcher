@@ -21,6 +21,7 @@ class VIEW3D_MT_sketcher_functions(Menu):
         layout.operator(Operators.OCCTPocket, icon="MOD_BOOLEAN")
         layout.operator(Operators.OCCTPickEdges, icon="RESTRICT_SELECT_OFF")
         layout.operator(Operators.OCCTFillet, icon="MOD_BEVEL")
+        layout.operator(Operators.OCCTPattern, icon="MOD_ARRAY")
         layout.operator(Operators.OCCTRemoveLast, icon="TRASH")
         layout.separator()
         layout.operator(Operators.FeaturePadSolid, icon="MESH_CUBE")

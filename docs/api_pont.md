@@ -1,4 +1,4 @@
-# Pont Al-Tasrif → CAD Sketcher (API v1.1)
+# Pont Al-Tasrif → CAD Sketcher (API v1.3)
 
 Al-Tasrif stocke (références, données de modélisation, gabarits). Sketcher exécute.
 Le seul point d'entrée est le module `api.py` de Sketcher :
@@ -72,7 +72,13 @@ Toute donnée invalide lève `api.ErreurPont`, avec un message lisible.
 - Toute valeur numérique peut être une **expression** : `"L/2 + 3"`, `"e*cos(30)"`. Sont permis les paramètres, `+ - * / ** %`, `pi`, `sin cos tan` (en degrés), `sqrt abs min max`. Rien d'autre n'est exécuté.
 - Un paramètre peut dépendre d'un autre (`"r": "h/2"`).
 - `parametres` passé à `executer_gabarit` remplace les valeurs par défaut.
-- Fonctions disponibles : `pad`, `pocket` (`sketch`, `depth`, `symmetric`) ; `fillet`, `chamfer` (`radius`, `select` : `ALL`, `TOP`, `BOTTOM`, `VERTICAL`, `CURSOR` + `probe`, `PICKED` + `probes`).
+- Fonctions disponibles : `pad`, `pocket` (`sketch`, `depth`, `symmetric`) ; `fillet`, `chamfer` (`radius`, `select` : `ALL`, `TOP`, `BOTTOM`, `VERTICAL`, `CURSOR` + `probe`, `PICKED` + `probes`) ; `pattern` (v1.3) :
+  - `feature` : numéro (1, 2…) du `pad` ou du `pocket` répété dans la liste ;
+  - `count` : nombre total d'exemplaires, l'original compris ;
+  - linéaire : `kind: "linear"`, `direction` (`SKETCH_X`, `SKETCH_Y`, `NORMAL`, `WORLD_X/Y/Z`), `spacing` en mm (négatif : dans l'autre sens) ;
+  - circulaire : `kind: "circular"`, `axis` (mêmes valeurs), `angle` en degrés (360 : réparti sur le tour), `center` en mm (sinon l'origine de l'esquisse).
+
+  Exemple, des stries au pas de 0,55 mm : `{"op": "pattern", "feature": 2, "kind": "linear", "direction": "SKETCH_X", "count": "n_stries", "spacing": 0.55}`.
 - Les esquisses sont nommées `<piece>.<nom>`, et la recette est enregistrée sous le nom de la pièce, qu'on peut donc recalculer.
 
 ## Mesure

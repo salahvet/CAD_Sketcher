@@ -73,6 +73,7 @@ class Operators(str, Enum):
     OCCTPad = "view3d.slvs_occt_pad"
     OCCTPocket = "view3d.slvs_occt_pocket"
     OCCTFillet = "view3d.slvs_occt_fillet"
+    OCCTPattern = "view3d.slvs_occt_pattern"
     OCCTRemoveLast = "view3d.slvs_occt_remove_last"
     OCCTRemoveFeature = "view3d.slvs_occt_remove_feature"
     OCCTRecompute = "view3d.slvs_occt_recompute"

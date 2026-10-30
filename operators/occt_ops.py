@@ -110,9 +110,15 @@ def recompute_part(context, part_name, report=None):
     solid = None
     base_origin = (0, 0, 0)
     normal = (0, 0, 1)
+    bodies = {}  # index de fonction -> (op, volume-outil, repere de l'esquisse)
 
-    for feat in recipe:
+    for index, feat in enumerate(recipe):
         op = feat["op"]
+        if feat.get("suppressed"):
+            continue
+        if op == "pattern":
+            solid = _apply_pattern(context, solid, feat, bodies, report)
+            continue
         if op in ("pad", "pocket"):
             sketch = find_sketch(context, feat["sketch"])
             if sketch is None:
@@ -129,6 +135,7 @@ def recompute_part(context, part_name, report=None):
                 body = b3d.extrude(face, amount=depth / 2.0, both=True)
             else:
                 body = b3d.extrude(face, amount=depth)
+            bodies[index] = (op, body, sketch.wp.matrix_basis.copy())
             if op == "pad":
                 if solid is None:
                     solid = body
@@ -173,6 +180,69 @@ def recompute_part(context, part_name, report=None):
     e_obj.parent = obj
     e_obj.hide_select = True
     return obj
+
+
+# ---------------------------------------------------------------------------
+# Repetition de fonction (pattern)
+# ---------------------------------------------------------------------------
+
+PATTERN_DIRECTIONS = [
+    ("SKETCH_X", "Sketch X", "Along the X axis of the repeated feature's sketch"),
+    ("SKETCH_Y", "Sketch Y", "Along the Y axis of the repeated feature's sketch"),
+    ("NORMAL", "Sketch Normal", "Along the normal of the repeated feature's sketch"),
+    ("WORLD_X", "World X", ""), ("WORLD_Y", "World Y", ""), ("WORLD_Z", "World Z", ""),
+]
+
+
+def _pattern_vector(name, matrix):
+    """Direction unitaire (monde) d'un nom de direction, dans le repere de l'esquisse."""
+    local = {"SKETCH_X": (1, 0, 0), "SKETCH_Y": (0, 1, 0), "NORMAL": (0, 0, 1)}
+    world = {"WORLD_X": (1, 0, 0), "WORLD_Y": (0, 1, 0), "WORLD_Z": (0, 0, 1)}
+    if name in world:
+        return Vector(world[name])
+    return (matrix.to_3x3() @ Vector(local.get(name, (1, 0, 0)))).normalized()
+
+
+def pattern_copies(body, feat, matrix):
+    """Copies 1..n-1 du volume-outil (la copie 0 est la fonction elle-meme)."""
+    import build123d as b3d
+    count = int(feat.get("count", 2))
+    copies = []
+    if feat.get("kind", "linear") == "circular":
+        axis_dir = _pattern_vector(feat.get("axis", "NORMAL"), matrix)
+        centre = Vector(feat["center"]) if feat.get("center") else matrix.translation
+        total = float(feat.get("angle", 360.0))
+        # 360 deg : la derniere copie ne doit pas retomber sur la premiere
+        step = total / count if abs(total - 360.0) < 1e-6 else total / max(count - 1, 1)
+        axis = b3d.Axis(tuple(centre), tuple(axis_dir))
+        for k in range(1, count):
+            copies.append(body.rotate(axis, step * k))
+    else:
+        d = _pattern_vector(feat.get("direction", "SKETCH_X"), matrix) * float(feat.get("spacing", 0.001))
+        for k in range(1, count):
+            copies.append(body.moved(b3d.Location((d.x * k, d.y * k, d.z * k))))
+    return copies
+
+
+def _apply_pattern(context, solid, feat, bodies, report=None):
+    src = feat.get("feature")
+    if src is None or src not in bodies:
+        if report:
+            report({"WARNING"}, "Pattern: the repeated feature is missing or suppressed")
+        return solid
+    op, body, matrix = bodies[src]
+    copies = pattern_copies(body, feat, matrix)
+    if not copies:
+        return solid
+    tool = copies[0].fuse(*copies[1:]) if len(copies) > 1 else copies[0]
+    if solid is None:
+        return tool if op == "pad" else None
+    try:
+        return solid + tool if op == "pad" else solid - tool
+    except Exception as e:
+        if report:
+            report({"WARNING"}, f"Pattern failed: {e}")
+        return solid
 
 
 def recompute_all(scene):
@@ -408,6 +478,101 @@ class View3D_OT_slvs_occt_fillet(Operator):
         return {"FINISHED"}
 
 
+def _renumber_patterns(recipe, removed_index):
+    """Apres suppression d'une fonction, les patterns pointent toujours la bonne source."""
+    for f in recipe:
+        if f.get("op") != "pattern" or f.get("feature") is None:
+            continue
+        if f["feature"] == removed_index:
+            f["feature"] = None  # source supprimee : le pattern ne fait plus rien
+        elif f["feature"] > removed_index:
+            f["feature"] -= 1
+
+
+def _repeatable_features(self, context):
+    recipe = get_recipes(context.scene).get(getattr(self, "part", ""), [])
+    items = [(str(i), f"{i + 1}. {f['op'].capitalize()} [{f.get('sketch', '?')}]", "")
+             for i, f in enumerate(recipe) if f.get("op") in ("pad", "pocket")]
+    _repeatable_features.cache = items or [("-1", "<no pad / pocket>", "")]
+    return _repeatable_features.cache
+
+
+class View3D_OT_slvs_occt_pattern(Operator):
+    """OCCT Pattern: repeat a pad or a pocket of the part, along a direction or around an axis
+    (serrations, ratchet teeth, holes). Stays parametric: edit the sketch and every copy follows"""
+
+    bl_idname = Operators.OCCTPattern
+    bl_label = "OCCT Pattern"
+    bl_options = {"REGISTER", "UNDO"}
+
+    part: EnumProperty(name="Part", items=_parts_enum)
+    feature: EnumProperty(name="Feature", items=_repeatable_features,
+                          description="Pad or pocket to repeat (default: the last one)")
+    kind: EnumProperty(name="Type", items=[("linear", "Linear", "Along a direction"),
+                                           ("circular", "Circular", "Around an axis")], default="linear")
+    direction: EnumProperty(name="Direction", items=PATTERN_DIRECTIONS, default="SKETCH_X")
+    count: IntProperty(name="Count", default=10, min=2, max=1000,
+                       description="Total number of instances, the original included")
+    spacing: FloatProperty(name="Spacing", default=0.00055, soft_min=-1.0, soft_max=1.0,
+                           unit="LENGTH", precision=5, description="Distance between two instances (negative: other way)")
+    axis: EnumProperty(name="Axis", items=PATTERN_DIRECTIONS, default="NORMAL")
+    angle: FloatProperty(name="Total Angle", default=360.0, min=-360.0, max=360.0,
+                         description="Degrees covered by the instances (360: evenly around)")
+    center: EnumProperty(name="Center", items=[("SKETCH", "Sketch Origin", ""),
+                                               ("CURSOR", "3D Cursor", "")], default="SKETCH")
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "OBJECT" and bool(get_recipes(context.scene))
+
+    def invoke(self, context, event):
+        ob = context.active_object
+        recipes = get_recipes(context.scene)
+        if ob is not None and ob.name in recipes:
+            self.part = ob.name
+        items = [i for i in _repeatable_features(self, context) if i[0] != "-1"]
+        if items:
+            self.feature = items[-1][0]
+        return context.window_manager.invoke_props_dialog(self, width=300)
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.prop(self, "part")
+        col.prop(self, "feature")
+        col.prop(self, "kind", expand=True)
+        col.prop(self, "count")
+        if self.kind == "linear":
+            col.prop(self, "direction")
+            col.prop(self, "spacing")
+        else:
+            col.prop(self, "axis")
+            col.prop(self, "center")
+            col.prop(self, "angle")
+
+    def execute(self, context: Context):
+        recipes = get_recipes(context.scene)
+        if self.part not in recipes or self.feature == "-1":
+            self.report({"ERROR"}, "Nothing to repeat (make an OCCT Pad or Pocket first)")
+            return {"CANCELLED"}
+        feat = {"op": "pattern", "feature": int(self.feature), "kind": self.kind, "count": self.count}
+        if self.kind == "linear":
+            feat.update(direction=self.direction, spacing=self.spacing)
+        else:
+            feat.update(axis=self.axis, angle=self.angle)
+            if self.center == "CURSOR":
+                feat["center"] = list(context.scene.cursor.location)
+        recipes[self.part].append(feat)
+        set_recipes(context.scene, recipes)
+        obj = recompute_part(context, self.part, report=self.report)
+        if obj is None:
+            recipes[self.part].pop()
+            set_recipes(context.scene, recipes)
+            self.report({"ERROR"}, "Recompute failed")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Pattern x{self.count} -> {self.part}")
+        return {"FINISHED"}
+
+
 class View3D_OT_slvs_occt_remove_last(Operator):
     """Remove the last feature of a part and recompute"""
 
@@ -451,6 +616,7 @@ class View3D_OT_slvs_occt_remove_feature(Operator):
         if recipe is None or not (0 <= self.index < len(recipe)):
             return {"CANCELLED"}
         removed = recipe.pop(self.index)
+        _renumber_patterns(recipe, self.index)
         if not recipe:
             del recipes[self.part]
             obj = context.scene.objects.get(self.part)
@@ -627,7 +793,7 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
 
 
 classes = (View3D_OT_slvs_occt_pad, View3D_OT_slvs_occt_pocket,
-           View3D_OT_slvs_occt_fillet, View3D_OT_slvs_occt_remove_last,
+           View3D_OT_slvs_occt_fillet, View3D_OT_slvs_occt_pattern, View3D_OT_slvs_occt_remove_last,
            View3D_OT_slvs_occt_remove_feature, View3D_OT_slvs_occt_recompute,
            View3D_OT_slvs_occt_pick_edges)
 _register, _unregister = register_classes_factory(classes)

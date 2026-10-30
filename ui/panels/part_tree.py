@@ -7,7 +7,7 @@ from . import VIEW3D_PT_sketcher_base
 
 
 _ICONS = {"pad": "MESH_CUBE", "pocket": "MOD_BOOLEAN",
-          "fillet": "MOD_BEVEL", "chamfer": "MOD_BEVEL"}
+          "fillet": "MOD_BEVEL", "chamfer": "MOD_BEVEL", "pattern": "MOD_ARRAY"}
 
 
 class VIEW3D_PT_sketcher_part_tree(VIEW3D_PT_sketcher_base):
@@ -35,7 +35,15 @@ class VIEW3D_PT_sketcher_part_tree(VIEW3D_PT_sketcher_base):
             row.label(text=part_name, icon="OBJECT_DATA")
             for i, feat in enumerate(recipe):
                 op = feat.get("op", "?")
-                if op in ("pad", "pocket"):
+                if op == "pattern":
+                    src = feat.get("feature")
+                    what = f"#{src + 1}" if src is not None else "(source removed)"
+                    if feat.get("kind") == "circular":
+                        how = f"{feat.get('angle', 360):g}°"
+                    else:
+                        how = f"step {feat.get('spacing', 0) * 1000:.3g} mm"
+                    txt = f"{i+1}. Pattern x{feat.get('count')} of {what}  {how}"
+                elif op in ("pad", "pocket"):
                     txt = (f"{i+1}. {op.capitalize()}  "
                            f"[{feat.get('sketch','?')}]  "
                            f"d={feat.get('depth', 0):.3g}")
