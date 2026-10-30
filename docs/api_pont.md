@@ -1,4 +1,4 @@
-# Pont Al-Tasrif → CAD Sketcher (API v1.3)
+# Pont Al-Tasrif → CAD Sketcher (API v1.4)
 
 Al-Tasrif stocke (références, données de modélisation, gabarits). Sketcher exécute.
 Le seul point d'entrée est le module `api.py` de Sketcher :
@@ -77,6 +77,9 @@ Toute donnée invalide lève `api.ErreurPont`, avec un message lisible.
   - `count` : nombre total d'exemplaires, l'original compris ;
   - linéaire : `kind: "linear"`, `direction` (`SKETCH_X`, `SKETCH_Y`, `NORMAL`, `WORLD_X/Y/Z`), `spacing` en mm (négatif : dans l'autre sens) ;
   - circulaire : `kind: "circular"`, `axis` (mêmes valeurs), `angle` en degrés (360 : réparti sur le tour), `center` en mm (sinon l'origine de l'esquisse).
+
+- `mirror` (v1.4) : `plane` (`XY`, `XZ`, `YZ`), `center` en mm (sinon l'origine, le pivot), `fuse` (vrai par défaut : la copie est fusionnée avec l'original ; faux : seule la copie reste).
+- Pièce dérivée (dans Sketcher, pas dans les gabarits) : **OCCT Derive Part** crée une pièce qui part du solide d'une autre, en miroir si besoin, avec certaines fonctions de la source désactivées ; elle suit sa source.
 
   Exemple, des stries au pas de 0,55 mm : `{"op": "pattern", "feature": 2, "kind": "linear", "direction": "SKETCH_X", "count": "n_stries", "spacing": 0.55}`.
 - Les esquisses sont nommées `<piece>.<nom>`, et la recette est enregistrée sous le nom de la pièce, qu'on peut donc recalculer.

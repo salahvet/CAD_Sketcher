@@ -7,7 +7,29 @@ from . import VIEW3D_PT_sketcher_base
 
 
 _ICONS = {"pad": "MESH_CUBE", "pocket": "MOD_BOOLEAN",
-          "fillet": "MOD_BEVEL", "chamfer": "MOD_BEVEL", "pattern": "MOD_ARRAY"}
+          "fillet": "MOD_BEVEL", "chamfer": "MOD_BEVEL", "pattern": "MOD_ARRAY",
+          "derive": "DUPLICATE", "mirror": "MOD_MIRROR"}
+
+
+def _feature_text(i, feat):
+    op = feat.get("op", "?")
+    if op == "pattern":
+        src = feat.get("feature")
+        what = f"#{src + 1}" if src is not None else "(source removed)"
+        if feat.get("kind") == "circular":
+            how = f"{feat.get('angle', 360):g}°"
+        else:
+            how = f"step {feat.get('spacing', 0) * 1000:.3g} mm"
+        return f"{i+1}. Pattern x{feat.get('count')} of {what}  {how}"
+    if op == "derive":
+        m = feat.get("mirror", "NONE")
+        return f"{i+1}. Derived from {feat.get('from', '?')}" + (f"  (mirror {m})" if m != "NONE" else "")
+    if op == "mirror":
+        return f"{i+1}. Mirror {feat.get('plane', '?')}" + ("" if feat.get("fuse", True) else "  (copy only)")
+    if op in ("pad", "pocket"):
+        return (f"{i+1}. {op.capitalize()}  [{feat.get('sketch','?')}]  "
+                f"d={feat.get('depth', 0):.3g}")
+    return f"{i+1}. {op.capitalize()}  ({feat.get('select','?')})  r={feat.get('radius', 0):.3g}"
 
 
 class VIEW3D_PT_sketcher_part_tree(VIEW3D_PT_sketcher_base):
@@ -35,28 +57,31 @@ class VIEW3D_PT_sketcher_part_tree(VIEW3D_PT_sketcher_base):
             row.label(text=part_name, icon="OBJECT_DATA")
             for i, feat in enumerate(recipe):
                 op = feat.get("op", "?")
-                if op == "pattern":
-                    src = feat.get("feature")
-                    what = f"#{src + 1}" if src is not None else "(source removed)"
-                    if feat.get("kind") == "circular":
-                        how = f"{feat.get('angle', 360):g}°"
-                    else:
-                        how = f"step {feat.get('spacing', 0) * 1000:.3g} mm"
-                    txt = f"{i+1}. Pattern x{feat.get('count')} of {what}  {how}"
-                elif op in ("pad", "pocket"):
-                    txt = (f"{i+1}. {op.capitalize()}  "
-                           f"[{feat.get('sketch','?')}]  "
-                           f"d={feat.get('depth', 0):.3g}")
-                else:
-                    txt = (f"{i+1}. {op.capitalize()}  "
-                           f"({feat.get('select','?')})  "
-                           f"r={feat.get('radius', 0):.3g}")
                 row = box.row(align=True)
-                row.label(text=txt, icon=_ICONS.get(op, "DOT"))
+                off = feat.get("suppressed", False)
+                t = row.operator(declarations.Operators.OCCTToggleFeature, text="",
+                                 icon="HIDE_ON" if off else "HIDE_OFF", emboss=False)
+                t.part, t.index, t.source_index = part_name, i, -1
+                label = row.row()
+                label.enabled = not off
+                label.label(text=_feature_text(i, feat), icon=_ICONS.get(op, "DOT"))
                 p = row.operator(declarations.Operators.OCCTRemoveFeature,
                                  text="", icon="TRASH")
                 p.part = part_name
                 p.index = i
+                if op == "derive" and feat.get("from") in recipes:
+                    # fonctions de la source : decocher pour les retirer de la piece derivee
+                    sub = box.column(align=True)
+                    sup = set(feat.get("suppress", []))
+                    for k, sf in enumerate(recipes[feat["from"]]):
+                        r = sub.row(align=True)
+                        r.separator(factor=3.0)
+                        t = r.operator(declarations.Operators.OCCTToggleFeature, text="",
+                                       icon="CHECKBOX_DEHLT" if k in sup else "CHECKBOX_HLT", emboss=False)
+                        t.part, t.index, t.source_index = part_name, i, k
+                        lr = r.row()
+                        lr.enabled = k not in sup
+                        lr.label(text=_feature_text(k, sf), icon=_ICONS.get(sf.get("op"), "DOT"))
 
         layout.operator(declarations.Operators.OCCTPickEdges,
                         icon="RESTRICT_SELECT_OFF")

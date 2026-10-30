@@ -23,7 +23,7 @@ import operator
 import bpy
 from mathutils import Vector
 
-API_VERSION = (1, 3)
+API_VERSION = (1, 4)
 
 # plans d'Al-Tasrif (VUES) -> plans d'origine de Sketcher
 PLANS = {
@@ -106,6 +106,7 @@ def _substituer(obj, parametres):
     """Remplace recursivement les expressions par leur valeur."""
     if isinstance(obj, dict):
         return {k: (v if k in ("type", "nom", "op", "sketch", "select", "plan", "kind", "direction", "axis")
+                    or (k == "plane")
                     else _substituer(v, parametres)) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
         return [_substituer(v, parametres) for v in obj]
@@ -269,7 +270,7 @@ def executer_gabarit(gabarit, parametres=None, piece=None, context=None):
     for f in gabarit.get("fonctions") or []:
         f = _substituer(f, vals)
         op = f.get("op")
-        if op not in ("pad", "pocket", "fillet", "chamfer", "pattern"):
+        if op not in ("pad", "pocket", "fillet", "chamfer", "pattern", "mirror"):
             raise ErreurPont(f"unsupported feature: {op!r}")
         f = dict(f)
         if "sketch" in f:
@@ -288,6 +289,12 @@ def executer_gabarit(gabarit, parametres=None, piece=None, context=None):
             f["count"] = int(round(float(f.get("count", 2))))
             if "center" in f:
                 f["center"] = [float(c) * k for c in f["center"]]
+        if op == "mirror":
+            if f.get("plane") not in ("XY", "XZ", "YZ"):
+                raise ErreurPont(f"mirror: plane must be XY, XZ or YZ, not {f.get('plane')!r}")
+            if "center" in f:
+                f["center"] = [float(c) * k for c in f["center"]]
+            f["fuse"] = bool(f.get("fuse", True))
         recette.append(f)
 
     recettes = occt_ops.get_recipes(context.scene)
@@ -316,12 +323,22 @@ def mesurer(piece, context=None):
     if obj is None:
         raise ErreurPont(f"part not found: {piece!r}")
     mm = _mm_par_unite(context)
-    coins = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
-    boite = [(max(c[a] for c in coins) - min(c[a] for c in coins)) * mm for a in range(3)]
+    solide = occt_ops._solid_cache.get(obj.name)
+    boite = None
+    if solide is not None:
+        # boite exacte du B-rep, a jour meme avant le rafraichissement de la scene
+        try:
+            bb = solide.bounding_box()
+            boite = [bb.size.X * mm, bb.size.Y * mm, bb.size.Z * mm]
+        except Exception:
+            boite = None
+    if boite is None:
+        context.view_layer.update()  # bound_box n'est recalcule qu'a la mise a jour de la scene
+        coins = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+        boite = [(max(c[a] for c in coins) - min(c[a] for c in coins)) * mm for a in range(3)]
     tri = sorted(boite, reverse=True)
 
     volume = None
-    solide = occt_ops._solid_cache.get(obj.name)
     if solide is not None:
         try:
             volume = float(solide.volume) * mm ** 3

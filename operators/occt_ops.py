@@ -100,13 +100,34 @@ def select_edges(solid, feat, base_origin, normal):
 # Moteur de recompute
 # ---------------------------------------------------------------------------
 
-def recompute_part(context, part_name, report=None):
-    import build123d as b3d
-    recipes = get_recipes(context.scene)
-    recipe = recipes.get(part_name)
-    if not recipe:
-        return None
+MIRROR_PLANES = [
+    ("XZ", "XZ (flip Y)", "Mirror across the XZ plane"),
+    ("YZ", "YZ (flip X)", "Mirror across the YZ plane"),
+    ("XY", "XY (flip Z)", "Mirror across the XY plane"),
+]
+_PLANE_NORMALS = {"XY": (0, 0, 1), "XZ": (0, 1, 0), "YZ": (1, 0, 0)}
 
+
+def _mirror_plane(feat):
+    import build123d as b3d
+    n = _PLANE_NORMALS.get(feat.get("plane") or feat.get("mirror"), (0, 1, 0))
+    origin = tuple(feat.get("center") or (0, 0, 0))
+    return b3d.Plane(origin=origin, z_dir=n), Vector(n), Vector(origin)
+
+
+def _reflect(v, n, o):
+    """Reflet du point v par le plan (normale n, passant par o)."""
+    v = Vector(v)
+    return v - 2 * (v - o).dot(n) * n
+
+
+def build_solid(context, recipe, report=None, skip=(), part_name="", _stack=()):
+    """Solide B-rep d'une recette, sans toucher a la scene.
+
+    skip : index des fonctions ignorees (en plus de celles marquees "suppressed").
+    Retourne (solid, base_origin, normal) ; solid vaut None si rien n'est construit.
+    """
+    import build123d as b3d
     solid = None
     base_origin = (0, 0, 0)
     normal = (0, 0, 1)
@@ -114,7 +135,43 @@ def recompute_part(context, part_name, report=None):
 
     for index, feat in enumerate(recipe):
         op = feat["op"]
-        if feat.get("suppressed"):
+        if feat.get("suppressed") or index in skip:
+            continue
+        if op == "derive":
+            src = feat.get("from")
+            recipes = get_recipes(context.scene)
+            if src in _stack or src == part_name:
+                if report:
+                    report({"WARNING"}, f"Derive: cycle through '{src}'")
+                continue
+            if src not in recipes:
+                if report:
+                    report({"WARNING"}, f"Derive: source part '{src}' not found")
+                continue
+            body, o, nv = build_solid(context, recipes[src], report, set(feat.get("suppress", [])),
+                                      src, _stack + (part_name,))
+            if body is None:
+                continue
+            if feat.get("mirror") and feat["mirror"] != "NONE":
+                plane, n, c = _mirror_plane(feat)
+                body = body.mirror(plane)
+                o = tuple(_reflect(o, n, c))
+                nv = tuple(_reflect(Vector(nv) + c, n, c) - _reflect(c, n, c))
+            if solid is None:
+                solid, base_origin, normal = body, o, nv
+            else:
+                solid = solid + body
+            continue
+        if op == "mirror":
+            if solid is None:
+                continue
+            plane, _n, _c = _mirror_plane(feat)
+            try:
+                mirrored = solid.mirror(plane)
+                solid = solid + mirrored if feat.get("fuse", True) else mirrored
+            except Exception as e:
+                if report:
+                    report({"WARNING"}, f"Mirror failed: {e}")
             continue
         if op == "pattern":
             solid = _apply_pattern(context, solid, feat, bodies, report)
@@ -165,6 +222,29 @@ def recompute_part(context, part_name, report=None):
                     report({"WARNING"},
                            f"{op} impossible (rayon trop grand ?) : {e}")
 
+    return solid, base_origin, normal
+
+
+def dependents(recipes, part_name):
+    """Pieces derivees (directement ou non) de part_name, sources avant derivees."""
+    out, todo = [], [part_name]
+    while todo:
+        cur = todo.pop(0)
+        for name, recipe in recipes.items():
+            if name not in out and name != part_name and any(
+                    f.get("op") == "derive" and f.get("from") == cur for f in recipe):
+                out.append(name)
+                todo.append(name)
+    return out
+
+
+def recompute_part(context, part_name, report=None, cascade=True):
+    recipes = get_recipes(context.scene)
+    recipe = recipes.get(part_name)
+    if not recipe:
+        return None
+
+    solid, _o, _n = build_solid(context, recipe, report, part_name=part_name)
     if solid is None:
         return None
 
@@ -179,6 +259,13 @@ def recompute_part(context, part_name, report=None):
     e_obj = occt_bridge.shape_edges_object(solid, edges_name, existing=e_existing)
     e_obj.parent = obj
     e_obj.hide_select = True
+
+    if cascade:  # les pieces derivees suivent leur source
+        for name in dependents(recipes, part_name):
+            try:
+                recompute_part(context, name, report, cascade=False)
+            except Exception:
+                continue
     return obj
 
 
@@ -255,14 +342,21 @@ def recompute_all(scene):
 
 
 def recompute_for_sketch(scene, sketch_name):
-    """Ne recalcule que les pieces qui referencent ce sketch."""
+    """Ne recalcule que les pieces qui referencent ce sketch (et leurs derivees)."""
     context = bpy.context
-    for part_name, recipe in get_recipes(scene).items():
-        if any(f.get("sketch") == sketch_name for f in recipe):
-            try:
-                recompute_part(context, part_name)
-            except Exception:
-                continue
+    recipes = get_recipes(scene)
+    direct = [n for n, r in recipes.items() if any(f.get("sketch") == sketch_name for f in r)]
+    ordre = []
+    for n in direct:
+        for m in [n] + dependents(recipes, n):
+            if m in ordre:
+                ordre.remove(m)  # une derivee passe apres toutes ses sources
+            ordre.append(m)
+    for part_name in ordre:
+        try:
+            recompute_part(context, part_name, cascade=False)
+        except Exception:
+            continue
 
 
 # hook parametrique : recompute apres chaque conversion de sketch
@@ -489,6 +583,14 @@ def _renumber_patterns(recipe, removed_index):
             f["feature"] -= 1
 
 
+def _renumber_derived(recipes, part, removed_index):
+    for r in recipes.values():
+        for f in r:
+            if f.get("op") == "derive" and f.get("from") == part:
+                f["suppress"] = [i - 1 if i > removed_index else i
+                                 for i in f.get("suppress", []) if i != removed_index]
+
+
 def _repeatable_features(self, context):
     recipe = get_recipes(context.scene).get(getattr(self, "part", ""), [])
     items = [(str(i), f"{i + 1}. {f['op'].capitalize()} [{f.get('sketch', '?')}]", "")
@@ -573,6 +675,123 @@ class View3D_OT_slvs_occt_pattern(Operator):
         return {"FINISHED"}
 
 
+class View3D_OT_slvs_occt_derive(Operator):
+    """OCCT Derive Part: start a new part from another part's solid, optionally mirrored, with some of
+    its features switched off (e.g. the second branch of a forceps). Stays linked: edit the source
+    and the derived part follows"""
+
+    bl_idname = Operators.OCCTDerive
+    bl_label = "OCCT Derive Part"
+    bl_options = {"REGISTER", "UNDO"}
+
+    source: EnumProperty(name="Source Part", items=_parts_enum)
+    name: bpy.props.StringProperty(name="New Part", default="")
+    mirror: EnumProperty(name="Mirror", items=[("NONE", "None", "")] + MIRROR_PLANES, default="XZ")
+    center: EnumProperty(name="Mirror Through", items=[("ORIGIN", "World Origin (pivot)", ""),
+                                                       ("CURSOR", "3D Cursor", "")], default="ORIGIN")
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "OBJECT" and bool(get_recipes(context.scene))
+
+    def invoke(self, context, event):
+        ob = context.active_object
+        if ob is not None and ob.name in get_recipes(context.scene):
+            self.source = ob.name
+        return context.window_manager.invoke_props_dialog(self, width=300)
+
+    def execute(self, context: Context):
+        recipes = get_recipes(context.scene)
+        if self.source not in recipes:
+            self.report({"ERROR"}, "No source part")
+            return {"CANCELLED"}
+        name = self.name.strip() or f"{self.source}.B"
+        base, i = name, 1
+        while name in recipes or (name in context.scene.objects and name not in recipes):
+            name = f"{base}.{i:03d}"
+            i += 1
+        feat = {"op": "derive", "from": self.source, "suppress": [], "mirror": self.mirror}
+        if self.mirror != "NONE" and self.center == "CURSOR":
+            feat["center"] = list(context.scene.cursor.location)
+        recipes[name] = [feat]
+        set_recipes(context.scene, recipes)
+        obj = recompute_part(context, name, report=self.report)
+        if obj is None:
+            del recipes[name]
+            set_recipes(context.scene, recipes)
+            self.report({"ERROR"}, "Recompute failed")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"{name} derived from {self.source}")
+        return {"FINISHED"}
+
+
+class View3D_OT_slvs_occt_mirror(Operator):
+    """OCCT Mirror: mirror the part's solid across a plane, fused with the original (symmetric part)
+    or alone"""
+
+    bl_idname = Operators.OCCTMirror
+    bl_label = "OCCT Mirror"
+    bl_options = {"REGISTER", "UNDO"}
+
+    part: EnumProperty(name="Part", items=_parts_enum)
+    plane: EnumProperty(name="Plane", items=MIRROR_PLANES, default="XY")
+    center: EnumProperty(name="Through", items=[("ORIGIN", "World Origin", ""),
+                                                ("CURSOR", "3D Cursor", "")], default="ORIGIN")
+    fuse: BoolProperty(name="Keep Original", default=True,
+                       description="Fuse the mirrored copy with the original (otherwise keep only the copy)")
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == "OBJECT" and bool(get_recipes(context.scene))
+
+    def invoke(self, context, event):
+        ob = context.active_object
+        if ob is not None and ob.name in get_recipes(context.scene):
+            self.part = ob.name
+        return context.window_manager.invoke_props_dialog(self, width=280)
+
+    def execute(self, context: Context):
+        recipes = get_recipes(context.scene)
+        if self.part not in recipes:
+            return {"CANCELLED"}
+        feat = {"op": "mirror", "plane": self.plane, "fuse": self.fuse}
+        if self.center == "CURSOR":
+            feat["center"] = list(context.scene.cursor.location)
+        recipes[self.part].append(feat)
+        set_recipes(context.scene, recipes)
+        recompute_part(context, self.part, report=self.report)
+        self.report({"INFO"}, f"Mirror {self.plane} -> {self.part}")
+        return {"FINISHED"}
+
+
+class View3D_OT_slvs_occt_toggle_feature(Operator):
+    """Switch this feature off or on (suppress); for a derived part, switch off a feature of the source"""
+
+    bl_idname = Operators.OCCTToggleFeature
+    bl_label = "Suppress / Unsuppress Feature"
+    bl_options = {"REGISTER", "UNDO"}
+
+    part: bpy.props.StringProperty()
+    index: IntProperty(default=-1)
+    source_index: IntProperty(default=-1, description="Index in the source part (derived parts only)")
+
+    def execute(self, context: Context):
+        recipes = get_recipes(context.scene)
+        recipe = recipes.get(self.part)
+        if recipe is None or not (0 <= self.index < len(recipe)):
+            return {"CANCELLED"}
+        feat = recipe[self.index]
+        if self.source_index >= 0:
+            sup = set(feat.get("suppress", []))
+            sup ^= {self.source_index}
+            feat["suppress"] = sorted(sup)
+        else:
+            feat["suppressed"] = not feat.get("suppressed", False)
+        set_recipes(context.scene, recipes)
+        recompute_part(context, self.part, report=self.report)
+        return {"FINISHED"}
+
+
 class View3D_OT_slvs_occt_remove_last(Operator):
     """Remove the last feature of a part and recompute"""
 
@@ -617,6 +836,7 @@ class View3D_OT_slvs_occt_remove_feature(Operator):
             return {"CANCELLED"}
         removed = recipe.pop(self.index)
         _renumber_patterns(recipe, self.index)
+        _renumber_derived(recipes, self.part, self.index)
         if not recipe:
             del recipes[self.part]
             obj = context.scene.objects.get(self.part)
@@ -793,7 +1013,9 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
 
 
 classes = (View3D_OT_slvs_occt_pad, View3D_OT_slvs_occt_pocket,
-           View3D_OT_slvs_occt_fillet, View3D_OT_slvs_occt_pattern, View3D_OT_slvs_occt_remove_last,
+           View3D_OT_slvs_occt_fillet, View3D_OT_slvs_occt_pattern,
+           View3D_OT_slvs_occt_derive, View3D_OT_slvs_occt_mirror,
+           View3D_OT_slvs_occt_toggle_feature, View3D_OT_slvs_occt_remove_last,
            View3D_OT_slvs_occt_remove_feature, View3D_OT_slvs_occt_recompute,
            View3D_OT_slvs_occt_pick_edges)
 _register, _unregister = register_classes_factory(classes)
