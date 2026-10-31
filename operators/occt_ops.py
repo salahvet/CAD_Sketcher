@@ -256,6 +256,7 @@ def build_solid(context, recipe, report=None, skip=(), part_name="", _stack=()):
 EXTENTS = [
     ("BLIND", "Blind", "Extrude by the given depth"),
     ("MID_PLANE", "Mid-Plane", "Half the depth on each side of the sketch"),
+    ("TWO_SIDES", "Two Sides", "A depth on each side of the sketch, set separately"),
     ("THROUGH_ALL", "Through All", "Through the whole part, on one side"),
     ("THROUGH_ALL_BOTH", "Through All (Both Sides)", "Through the whole part, on both sides"),
     ("UP_TO_NEXT", "Up to Next", "Up to the next face of the part"),
@@ -277,6 +278,13 @@ def extrude_feature(faces, feat, M, solid, report=None):
     d = b3d.Vector(*(n * sign))
     ext = feature_extent(feat)
     depth = float(feat.get("depth", 0.001))
+    depth2 = float(feat.get("depth2", 0.0))
+
+    def signed(f, amount, direction):
+        """Extrude by a signed amount: a negative depth goes the other way."""
+        if abs(amount) < 1e-12:
+            return None
+        return b3d.extrude(f, amount=abs(amount), dir=direction if amount > 0 else -direction)
 
     def far():
         """A length that crosses everything: faces and part, wherever the sketch is."""
@@ -291,7 +299,12 @@ def extrude_feature(faces, feat, M, solid, report=None):
     for f in faces:
         try:
             if ext == "MID_PLANE":
-                b = b3d.extrude(f, amount=depth / 2.0, dir=d, both=True)
+                b = b3d.extrude(f, amount=abs(depth) / 2.0, dir=d, both=True)
+            elif ext == "TWO_SIDES":
+                parts = [x for x in (signed(f, depth, d), signed(f, depth2, -d)) if x is not None]
+                if not parts:
+                    continue
+                b = parts[0] if len(parts) == 1 else parts[0] + parts[1]
             elif ext == "THROUGH_ALL":
                 b = b3d.extrude(f, amount=far(), dir=d)
             elif ext == "THROUGH_ALL_BOTH":
@@ -300,7 +313,7 @@ def extrude_feature(faces, feat, M, solid, report=None):
                 if solid is None:
                     if report:
                         report({"WARNING"}, "Up to Next / Last needs an existing solid: blind depth used")
-                    b = b3d.extrude(f, amount=depth, dir=d)
+                    b = signed(f, depth, d)
                 else:
                     until = b3d.Until.NEXT if ext == "UP_TO_NEXT" else b3d.Until.LAST
                     b = b3d.extrude(f, dir=d, until=until, target=solid)
@@ -312,7 +325,9 @@ def extrude_feature(faces, feat, M, solid, report=None):
                     continue
                 b = b3d.extrude(f, amount=abs(dist), dir=b3d.Vector(*(n if dist > 0 else -n)))
             else:
-                b = b3d.extrude(f, amount=depth, dir=d)
+                b = signed(f, depth, d)
+            if b is None:
+                continue
         except Exception as e:
             if report:
                 report({"WARNING"}, f"Extrusion failed ({ext}): {e}")
@@ -577,19 +592,36 @@ def _pad_parts_enum(self, context):
     return items
 
 
+def zero_depth(op):
+    """True when the depths leave nothing to extrude."""
+    if op.extent == "TWO_SIDES":
+        return abs(op.depth) < 1e-9 and abs(op.depth2) < 1e-9
+    return op.extent in ("BLIND", "MID_PLANE") and abs(op.depth) < 1e-9
+
+
+def _draw_depths(op, col):
+    if op.extent == "TWO_SIDES":
+        col.prop(op, "depth", text="Depth (Side 1)")
+        col.prop(op, "depth2", text="Depth (Side 2)")
+    elif op.extent in ("BLIND", "MID_PLANE"):
+        col.prop(op, "depth")
+
+
 class _ExtrudeProps:
     sketch: EnumProperty(name="Sketch", items=sketch_items, description="Sketch to extrude (default: the last one left)")
     extent: EnumProperty(name="Extent", items=EXTENTS, default="BLIND")
-    depth: FloatProperty(name="Depth", default=0.003, min=0.0001, soft_max=10.0, unit="LENGTH")
+    depth: FloatProperty(name="Depth", default=0.003, soft_min=-10.0, soft_max=10.0, unit="LENGTH",
+                         description="Negative: extrude on the other side of the sketch")
+    depth2: FloatProperty(name="Depth 2", default=0.003, soft_min=-10.0, soft_max=10.0, unit="LENGTH",
+                          description="Depth on the other side of the sketch (Two Sides)")
     reverse: BoolProperty(name="Reverse", default=False, description="Extrude on the other side of the sketch")
     use_regions: BoolProperty(name="Picked Regions Only", default=True,
                               description="Extrude only the regions picked with OCCT Pick Regions")
 
     def _draw_extent(self, context, col):
         col.prop(self, "extent")
-        if self.extent in ("BLIND", "MID_PLANE"):
-            col.prop(self, "depth")
-        if self.extent in ("BLIND", "THROUGH_ALL", "UP_TO_NEXT", "UP_TO_LAST"):
+        _draw_depths(self, col)
+        if self.extent in ("BLIND", "TWO_SIDES", "THROUGH_ALL", "UP_TO_NEXT", "UP_TO_LAST"):
             col.prop(self, "reverse")
         n = len(region_picks(context.scene, self.sketch))
         row = col.row()
@@ -597,7 +629,7 @@ class _ExtrudeProps:
         row.prop(self, "use_regions", text=f"Picked Regions Only ({n})" if n else "Picked Regions Only (none)")
 
     def _feature(self, context, op, sketch):
-        feat = {"op": op, "sketch": sketch.name, "depth": self.depth, "extent": self.extent,
+        feat = {"op": op, "sketch": sketch.name, "depth": self.depth, "depth2": self.depth2, "extent": self.extent,
                 "symmetric": self.extent == "MID_PLANE", "reverse": self.reverse}
         if self.extent == "UP_TO_CURSOR":
             feat["probe"] = list(context.scene.cursor.location)
@@ -632,6 +664,9 @@ class View3D_OT_slvs_occt_pad(Operator, _ExtrudeProps):
         self._draw_extent(context, col)
 
     def execute(self, context: Context):
+        if zero_depth(self):
+            self.report({"ERROR"}, "Depth is zero: nothing to extrude")
+            return {"CANCELLED"}
         sketch = sketch_by_name(context, self.sketch)
         if sketch is None:
             self.report({"ERROR"}, "Choose a sketch")
@@ -691,6 +726,9 @@ class View3D_OT_slvs_occt_pocket(Operator, _ExtrudeProps):
     def execute(self, context: Context):
         if self.part == "NONE":
             self.report({"ERROR"}, "No part (make an OCCT Pad first)")
+            return {"CANCELLED"}
+        if zero_depth(self):
+            self.report({"ERROR"}, "Depth is zero: nothing to extrude")
             return {"CANCELLED"}
         sketch = sketch_by_name(context, self.sketch)
         if sketch is None:
@@ -995,7 +1033,10 @@ class View3D_OT_slvs_occt_edit_feature(Operator):
     index: IntProperty(default=-1, options={"HIDDEN"})
     # pad / pocket
     extent: EnumProperty(name="Extent", items=EXTENTS, default="BLIND")
-    depth: FloatProperty(name="Depth", default=0.003, min=0.0001, soft_max=10.0, unit="LENGTH")
+    depth: FloatProperty(name="Depth", default=0.003, soft_min=-10.0, soft_max=10.0, unit="LENGTH",
+                         description="Negative: extrude on the other side of the sketch")
+    depth2: FloatProperty(name="Depth 2", default=0.003, soft_min=-10.0, soft_max=10.0, unit="LENGTH",
+                          description="Depth on the other side of the sketch (Two Sides)")
     reverse: BoolProperty(name="Reverse", default=False)
     keep_regions: BoolProperty(name="Picked Regions Only", default=True,
                                description="Keep the regions stored in the feature (otherwise the whole sketch)")
@@ -1030,6 +1071,7 @@ class View3D_OT_slvs_occt_edit_feature(Operator):
         if op in ("pad", "pocket"):
             self.extent = feature_extent(f)
             self.depth = f.get("depth", 0.003)
+            self.depth2 = f.get("depth2", 0.003)
             self.reverse = f.get("reverse", False)
             self.keep_regions = bool(f.get("regions"))
             self.update_regions = False
@@ -1059,9 +1101,8 @@ class View3D_OT_slvs_occt_edit_feature(Operator):
         if op in ("pad", "pocket"):
             col.label(text=f"Sketch: {f.get('sketch', '?')}", icon="GREASEPENCIL")
             col.prop(self, "extent")
-            if self.extent in ("BLIND", "MID_PLANE"):
-                col.prop(self, "depth")
-            if self.extent in ("BLIND", "THROUGH_ALL", "UP_TO_NEXT", "UP_TO_LAST"):
+            _draw_depths(self, col)
+            if self.extent in ("BLIND", "TWO_SIDES", "THROUGH_ALL", "UP_TO_NEXT", "UP_TO_LAST"):
                 col.prop(self, "reverse")
             if f.get("regions"):
                 col.prop(self, "keep_regions", text=f"Picked Regions Only ({len(f['regions'])})")
@@ -1098,7 +1139,10 @@ class View3D_OT_slvs_occt_edit_feature(Operator):
         f = recipe[self.index]
         op = f.get("op")
         if op in ("pad", "pocket"):
-            f.update(extent=self.extent, depth=self.depth, reverse=self.reverse,
+            if zero_depth(self):
+                self.report({"ERROR"}, "Depth is zero: nothing to extrude")
+                return {"CANCELLED"}
+            f.update(extent=self.extent, depth=self.depth, depth2=self.depth2, reverse=self.reverse,
                      symmetric=self.extent == "MID_PLANE")
             if self.extent == "UP_TO_CURSOR":
                 f["probe"] = list(context.scene.cursor.location)

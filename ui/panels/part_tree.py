@@ -29,11 +29,12 @@ def _feature_text(i, feat):
     if op in ("pad", "pocket"):
         ext = feat.get("extent") or ("MID_PLANE" if feat.get("symmetric") else "BLIND")
         how = {"BLIND": f"{feat.get('depth', 0) * 1000:.3g} mm",
-               "MID_PLANE": f"mid-plane {feat.get('depth', 0) * 1000:.3g} mm",
+               "MID_PLANE": f"mid-plane {abs(feat.get('depth', 0)) * 1000:.3g} mm",
+               "TWO_SIDES": f"{feat.get('depth', 0) * 1000:.3g} / {feat.get('depth2', 0) * 1000:.3g} mm",
                "THROUGH_ALL": "through all", "THROUGH_ALL_BOTH": "through all (both)",
                "UP_TO_NEXT": "up to next", "UP_TO_LAST": "up to last",
                "UP_TO_CURSOR": "up to cursor"}.get(ext, ext)
-        if feat.get("reverse") and ext in ("BLIND", "THROUGH_ALL", "UP_TO_NEXT", "UP_TO_LAST"):
+        if feat.get("reverse") and ext in ("BLIND", "TWO_SIDES", "THROUGH_ALL", "UP_TO_NEXT", "UP_TO_LAST"):
             how += ", reversed"
         regions = f"  ({len(feat['regions'])} region{'s' if len(feat['regions']) > 1 else ''})" if feat.get("regions") else ""
         return f"{i+1}. {op.capitalize()}  [{feat.get('sketch','?')}]  {how}{regions}"

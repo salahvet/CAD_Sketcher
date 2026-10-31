@@ -277,7 +277,7 @@ def executer_gabarit(gabarit, parametres=None, piece=None, context=None):
             if f["sketch"] not in noms:
                 raise ErreurPont(f"unknown sketch: {f['sketch']!r}")
             f["sketch"] = noms[f["sketch"]]
-        for cle in ("depth", "radius", "spacing"):  # mm -> unites Blender
+        for cle in ("depth", "depth2", "radius", "spacing"):  # mm -> unites Blender
             if cle in f:
                 f[cle] = float(f[cle]) * k
         if op == "pattern":
