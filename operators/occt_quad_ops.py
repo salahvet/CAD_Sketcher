@@ -17,7 +17,7 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
 from ..declarations import Operators
-from .. import occt_quad
+from .. import occt_quad, occt_quad2
 from . import occt_ops
 
 SHARP_MODES = [
@@ -73,8 +73,8 @@ def fit_to_surface(context, obj, bvh, iterations):
     return stats
 
 
-def build_quad_object(context, part_name, edge_length, max_angle, sharp_mode, support_width,
-                      levels, fit, iterations, report=None):
+def build_quad_object(context, part_name, tolerance, max_edge, max_angle, sharp_mode, support_width,
+                      levels, fit, iterations, report=None, method="PATCHES", edge_length=0.0015):
     obj_part = context.scene.objects.get(part_name)
     solid = occt_ops._solid_cache.get(part_name)
     if solid is None:
@@ -83,7 +83,11 @@ def build_quad_object(context, part_name, edge_length, max_angle, sharp_mode, su
     if solid is None:
         raise RuntimeError("The part cannot be rebuilt")
 
-    verts, faces, sharp, info = occt_quad.quad_mesh(solid, edge_length, max_angle, occt_quad.blender_cdt)
+    if method == "UNIFORM":
+        verts, faces, sharp, info = occt_quad.quad_mesh(solid, edge_length, 15.0, occt_quad.blender_cdt)
+    else:
+        verts, faces, sharp, info = occt_quad2.quad_mesh(solid, tolerance, max_edge, max_angle, 40.0,
+                                                         occt_quad.blender_cdt)
 
     bm = bmesh.new()
     bv = [bm.verts.new(v) for v in verts]
@@ -163,9 +167,19 @@ class View3D_OT_slvs_occt_quad_mesh(Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     part: EnumProperty(name="Part", items=_parts)
+    method: EnumProperty(name="Layout", default="PATCHES", items=[
+        ("PATCHES", "Patches (light)", "Few large patches with continuous edge loops; density follows curvature"),
+        ("UNIFORM", "Uniform (dense)", "Even density everywhere (previous method)"),
+    ])
     edge_length: FloatProperty(name="Edge Length", default=0.0015, min=1e-5, soft_max=0.02, unit="LENGTH",
-                               description="Target length of the cage edges")
-    max_angle: FloatProperty(name="Max Angle", default=15.0, min=2.0, max=60.0,
+                               description="Target edge length (Uniform layout)")
+    tolerance: FloatProperty(name="Tolerance", default=0.0001, min=1e-6, soft_max=0.001, unit="LENGTH",
+                             precision=4,
+                             description="Largest gap allowed between a cage edge and the exact curve: "
+                                         "segments are added only where the shape curves")
+    max_edge: FloatProperty(name="Max Edge Length", default=0.0, min=0.0, soft_max=0.05, unit="LENGTH",
+                            description="Longest cage edge (0 = no limit: flat areas stay as large quads)")
+    max_angle: FloatProperty(name="Max Angle", default=45.0, min=5.0, max=90.0,
                              description="Largest angle covered by one segment on curved edges (degrees)")
     sharp_mode: EnumProperty(name="Sharp Edges", items=SHARP_MODES, default="SUPPORT")
     support_width: FloatProperty(name="Support Width", default=0.0001, min=0.0, soft_max=0.002, unit="LENGTH",
@@ -190,8 +204,13 @@ class View3D_OT_slvs_occt_quad_mesh(Operator):
     def draw(self, context):
         col = self.layout.column()
         col.prop(self, "part")
-        col.prop(self, "edge_length")
-        col.prop(self, "max_angle")
+        col.prop(self, "method")
+        if self.method == "UNIFORM":
+            col.prop(self, "edge_length")
+        else:
+            col.prop(self, "tolerance")
+            col.prop(self, "max_edge")
+            col.prop(self, "max_angle")
         col.prop(self, "sharp_mode")
         row = col.row()
         row.enabled = self.sharp_mode == "SUPPORT"
@@ -207,13 +226,15 @@ class View3D_OT_slvs_occt_quad_mesh(Operator):
             return {"CANCELLED"}
         try:
             obj, info, stats = build_quad_object(
-                context, self.part, self.edge_length, self.max_angle, self.sharp_mode,
+                context, self.part, self.tolerance, self.max_edge, self.max_angle, self.sharp_mode,
                 self.support_width, self.levels if self.fit or self.levels else 0, self.fit,
-                self.iterations, report=self.report)
+                self.iterations, report=self.report, method=self.method, edge_length=self.edge_length)
         except Exception as e:
             self.report({"ERROR"}, f"Quad mesh failed: {e}")
             return {"CANCELLED"}
         msg = f"{obj.name}: {len(obj.data.polygons)} faces"
+        if info.get("free_patches"):
+            msg += f", {info['free_patches']} patch(es) filled freely"
         if info.get("ngons"):
             msg += f" ({info['ngons']} not quads)"
         if stats:
