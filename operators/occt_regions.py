@@ -5,6 +5,7 @@ highlight, click to select or unselect, Enter to confirm, Esc to cancel. Each pi
 is stored as one interior point in sketch coordinates, so it is found again after small edits.
 """
 import bpy
+from bpy.props import EnumProperty
 from bpy.types import Operator
 from bpy.utils import register_classes_factory
 from bpy_extras import view3d_utils
@@ -31,16 +32,24 @@ class View3D_OT_slvs_occt_pick_regions(Operator):
     bl_idname = Operators.OCCTPickRegions
     bl_label = "OCCT Pick Regions"
 
+    sketch: EnumProperty(name="Sketch", items=occt_ops.sketch_items)
+
     @classmethod
     def poll(cls, context):
-        return (context.area is not None and context.area.type == "VIEW_3D"
-                and context.scene.sketcher.active_sketch is not None)
+        if context.area is None or context.area.type != "VIEW_3D":
+            return False
+        return occt_ops.poll_outside_sketch(cls, context)
 
     def invoke(self, context, event):
         import gpu
         from gpu_extras.batch import batch_for_shader
 
-        sketch = context.scene.sketcher.active_sketch
+        if not self.properties.is_property_set("sketch"):
+            self.sketch = occt_ops.sketch_items(self, context)[0][0]
+        sketch = occt_ops.sketch_by_name(context, self.sketch)
+        if sketch is None:
+            self.report({"ERROR"}, "No sketch")
+            return {"CANCELLED"}
         try:
             faces = occt_bridge.sketch_regions(context, sketch)
         except Exception as e:

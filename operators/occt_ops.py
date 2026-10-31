@@ -535,6 +535,34 @@ def _ensure_unique_name(context, sketch):
     return sketch
 
 
+def sketch_items(self, context):
+    """Sketches of the scene, the last one left first (default choice)."""
+    sketches = [s.name for s in context.scene.sketcher.entities.sketches]
+    last = context.scene.get("occt_last_sketch", "")
+    if last in sketches:
+        sketches.remove(last)
+        sketches.insert(0, last)
+    sketch_items.cache = [(n, n, "") for n in sketches] or [("NONE", "<no sketch>", "")]
+    return sketch_items.cache
+
+
+def sketch_by_name(context, name):
+    return next((s for s in context.scene.sketcher.entities.sketches if s.name == name), None)
+
+
+def poll_outside_sketch(cls, context):
+    """Features are made outside sketch mode, on a chosen sketch, to avoid any confusion."""
+    if context.mode != "OBJECT":
+        return False
+    if context.scene.sketcher.active_sketch is not None:
+        cls.poll_message_set("Leave the sketch first, then choose the sketch in the dialog")
+        return False
+    if not len(context.scene.sketcher.entities.sketches):
+        cls.poll_message_set("No sketch yet")
+        return False
+    return True
+
+
 def _active_sketch(context):
     s = context.scene.sketcher.active_sketch
     if s is not None and getattr(s, "is_sketch", False):
@@ -550,6 +578,7 @@ def _pad_parts_enum(self, context):
 
 
 class _ExtrudeProps:
+    sketch: EnumProperty(name="Sketch", items=sketch_items, description="Sketch to extrude (default: the last one left)")
     extent: EnumProperty(name="Extent", items=EXTENTS, default="BLIND")
     depth: FloatProperty(name="Depth", default=0.003, min=0.0001, soft_max=10.0, unit="LENGTH")
     reverse: BoolProperty(name="Reverse", default=False, description="Extrude on the other side of the sketch")
@@ -562,8 +591,7 @@ class _ExtrudeProps:
             col.prop(self, "depth")
         if self.extent in ("BLIND", "THROUGH_ALL", "UP_TO_NEXT", "UP_TO_LAST"):
             col.prop(self, "reverse")
-        sketch = _active_sketch(context)
-        n = len(region_picks(context.scene, sketch.name)) if sketch else 0
+        n = len(region_picks(context.scene, self.sketch))
         row = col.row()
         row.enabled = n > 0
         row.prop(self, "use_regions", text=f"Picked Regions Only ({n})" if n else "Picked Regions Only (none)")
@@ -591,18 +619,24 @@ class View3D_OT_slvs_occt_pad(Operator, _ExtrudeProps):
 
     @classmethod
     def poll(cls, context):
-        return context.mode == "OBJECT" and _active_sketch(context) is not None
+        return poll_outside_sketch(cls, context)
 
     def invoke(self, context, event):
+        self.sketch = sketch_items(self, context)[0][0]
         return context.window_manager.invoke_props_dialog(self, width=300)
 
     def draw(self, context):
         col = self.layout.column()
+        col.prop(self, "sketch")
         col.prop(self, "part")
         self._draw_extent(context, col)
 
     def execute(self, context: Context):
-        sketch = _ensure_unique_name(context, _active_sketch(context))
+        sketch = sketch_by_name(context, self.sketch)
+        if sketch is None:
+            self.report({"ERROR"}, "Choose a sketch")
+            return {"CANCELLED"}
+        sketch = _ensure_unique_name(context, sketch)
         recipes = get_recipes(context.scene)
         if self.part in ("__NEW__", "") or self.part not in recipes:
             part_name, i = f"OCCT_{sketch.name}", 1
@@ -637,9 +671,10 @@ class View3D_OT_slvs_occt_pocket(Operator, _ExtrudeProps):
 
     @classmethod
     def poll(cls, context):
-        return context.mode == "OBJECT" and _active_sketch(context) is not None
+        return poll_outside_sketch(cls, context)
 
     def invoke(self, context, event):
+        self.sketch = sketch_items(self, context)[0][0]
         if not self.properties.is_property_set("extent"):
             self.extent = "THROUGH_ALL_BOTH"
         ob = context.active_object
@@ -649,6 +684,7 @@ class View3D_OT_slvs_occt_pocket(Operator, _ExtrudeProps):
 
     def draw(self, context):
         col = self.layout.column()
+        col.prop(self, "sketch")
         col.prop(self, "part")
         self._draw_extent(context, col)
 
@@ -656,7 +692,11 @@ class View3D_OT_slvs_occt_pocket(Operator, _ExtrudeProps):
         if self.part == "NONE":
             self.report({"ERROR"}, "No part (make an OCCT Pad first)")
             return {"CANCELLED"}
-        sketch = _ensure_unique_name(context, _active_sketch(context))
+        sketch = sketch_by_name(context, self.sketch)
+        if sketch is None:
+            self.report({"ERROR"}, "Choose a sketch")
+            return {"CANCELLED"}
+        sketch = _ensure_unique_name(context, sketch)
         recipes = get_recipes(context.scene)
         recipes[self.part].append(self._feature(context, "pocket", sketch))
         set_recipes(context.scene, recipes)

@@ -135,6 +135,8 @@ def activate_sketch(context: Context, index: int, operator: Operator):
         space_data.shading.show_xray = sketch_mode
 
     last_sketch = context.scene.sketcher.active_sketch
+    if last_sketch is not None:
+        context.scene["occt_last_sketch"] = last_sketch.name  # proposed by Pad / Pocket afterwards
     logger.debug("Activate: {}".format(sk))
     props.active_sketch_i = index
     context.area.tag_redraw()
