@@ -3,7 +3,7 @@ import logging
 import math
 
 import bpy
-from bpy.props import EnumProperty, FloatProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty
 from bpy.types import Operator, Context
 from mathutils import Matrix, Vector
 
@@ -19,7 +19,7 @@ from ..stateful_operator.utilities.geometry import get_evaluated_obj, get_mesh_e
 from ..solver import solve_system
 from .base_3d import Operator3d
 from .constants import types_point_3d
-from .utilities import ignore_hover
+from .utilities import ignore_hover, activate_sketch
 from ..utilities.view import get_placement_pos
 
 logger = logging.getLogger(__name__)
@@ -188,6 +188,10 @@ class View3D_OT_slvs_add_workplane_face(Operator, Operator3d):
         description="A face normal closer than this to a world axis becomes that axis "
                     "(a curved side then gives a clean side-view plane); 0 keeps the exact normal",
     )
+    start_sketch: BoolProperty(
+        name="Start Sketch", default=True,
+        description="Open a new sketch on the workplane right away (view aligned)",
+    )
 
     def main(self, context: Context):
         sse = context.scene.sketcher.entities
@@ -217,8 +221,23 @@ class View3D_OT_slvs_add_workplane_face(Operator, Operator3d):
 
         self.target = sse.add_workplane(origin, nm)
         ignore_hover(self.target)
+        self._sketch_i = -1
+        if self.start_sketch:
+            wp_i = self.target.slvs_index
+            sketch = sse.add_sketch(sse.get(wp_i))
+            sk_i = sketch.slvs_index
+            p = sse.add_point_2d((0.0, 0.0), sse.get(sk_i))  # fixed origin, like Add Sketch
+            p.fixed = True
+            self._sketch_i = sk_i
+            self.target = sse.get(wp_i)
         context.area.tag_redraw() # Force re-draw of UI (Blender doesn't update after tool usage)
         return True
+
+    def fini(self, context: Context, succeede: bool):
+        if succeede and getattr(self, "_sketch_i", -1) >= 0:
+            activate_sketch(context, self._sketch_i, self)
+            wp = context.scene.sketcher.entities.get(self._sketch_i).wp
+            wp.visible = False
 
 
 register, unregister = register_stateops_factory(
