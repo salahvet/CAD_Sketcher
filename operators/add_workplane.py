@@ -1,7 +1,11 @@
 import logging
 
+import math
+
 import bpy
+from bpy.props import EnumProperty
 from bpy.types import Operator, Context
+from mathutils import Matrix, Vector
 
 from .. import global_data
 from ..model.types import SlvsNormal3D
@@ -97,8 +101,60 @@ class View3D_OT_slvs_add_workplane(Operator, Operator3d):
                 solve_system(context)
 
 
+def _snap_axis(n, tol_deg=0.5):
+    """A normal within tol_deg of a world axis becomes exactly that axis (tessellation noise)."""
+    for ax in (Vector((1, 0, 0)), Vector((0, 1, 0)), Vector((0, 0, 1))):
+        for a in (ax, -ax):
+            if n.angle(a) < math.radians(tol_deg):
+                return a.copy()
+    return n
+
+
+def face_frame(normal, point, origin_mode="PIVOT"):
+    """Workplane frame for a face: (origin, quaternion).
+
+    Sketch X follows world X when possible (else world Y), Y = normal x X, so a side face reads
+    like the side view and the top face like the top view. The origin is the projection of the
+    world origin (the instrument's pivot) onto the plane, or the picked point."""
+    n = _snap_axis(normal.normalized())
+    for ref in (Vector((1, 0, 0)), Vector((0, 1, 0))):
+        x = ref - n * ref.dot(n)
+        if x.length > 1e-6:
+            break
+    x.normalize()
+    y = n.cross(x)
+    quat = Matrix((x, y, n)).transposed().to_quaternion()
+    if origin_mode == "PIVOT":
+        origin = n * point.dot(n)  # projection of the world origin onto the plane
+    else:
+        origin = point
+    return origin, quat
+
+
+def _brep_face_normal(ob, point):
+    """Exact normal of the OCCT B-rep face under point, or None (not an OCCT part)."""
+    try:
+        from . import occt_ops
+        import build123d as b3d
+    except Exception:
+        return None, False
+    solid = occt_ops._solid_cache.get(ob.name)
+    if solid is None or not ob.get("occt_part"):
+        return None, False
+    p = b3d.Vector(*point)
+    face = min(solid.faces(), key=lambda f: f.distance_to(p))
+    try:
+        nv = face.normal_at(p)
+    except Exception:
+        nv = face.normal_at(face.center())
+    planar = face.geom_type == b3d.GeomType.PLANE
+    m = ob.matrix_world.to_3x3()  # parts are built in world space; follow the object if moved
+    return (m @ Vector((nv.X, nv.Y, nv.Z))).normalized(), planar
+
+
 class View3D_OT_slvs_add_workplane_face(Operator, Operator3d):
-    """Add a statically placed workplane, orientation and location is copied from selected mesh face"""
+    """Add a workplane on a mesh face: exact face of an OCCT part, origin at the projection of the
+    pivot (world origin), sketch X along world X when possible"""
 
     bl_idname = Operators.AddWorkPlaneFace
     bl_label = "Add Solvespace Workplane"
@@ -120,6 +176,13 @@ class View3D_OT_slvs_add_workplane_face(Operator, Operator3d):
         ),
     )
 
+    origin_mode: EnumProperty(
+        name="Origin",
+        items=[("PIVOT", "Pivot Projection", "Projection of the world origin (the pivot) onto the face plane"),
+               ("FACE", "Picked Face", "Centre of the picked mesh face (former behaviour)")],
+        default="PIVOT",
+    )
+
     def main(self, context: Context):
         sse = context.scene.sketcher.entities
 
@@ -129,10 +192,19 @@ class View3D_OT_slvs_add_workplane_face(Operator, Operator3d):
         face = mesh.polygons[face_index]
 
         mat_obj = ob.matrix_world
-        quat = get_face_orientation(mesh, face)
-        quat.rotate(mat_obj)
         pos = mat_obj @ face.center
-        origin = sse.add_point_3d(pos)
+        tri_n = (mat_obj.to_3x3() @ (get_face_orientation(mesh, face) @ Vector((0, 0, 1)))).normalized()
+        normal, planar = _brep_face_normal(bpy.data.objects[ob_name], pos)
+        if normal is None:
+            normal = tri_n
+        elif normal.dot(tri_n) < 0:
+            normal = -normal  # keep the outward side the user clicked
+        if normal is not None and planar is False and bpy.data.objects[ob_name].get("occt_part"):
+            self.report({"WARNING"}, "Curved face: the workplane is its tangent plane at the picked point")
+        origin_co, quat = face_frame(normal, pos, self.origin_mode)
+        if self.origin_mode == "FACE":
+            origin_co = pos
+        origin = sse.add_point_3d(origin_co)
         nm = sse.add_normal_3d(quat)
 
         self.target = sse.add_workplane(origin, nm)
