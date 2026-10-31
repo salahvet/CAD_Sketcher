@@ -120,6 +120,63 @@ def sketch_to_face(context, sketch):
     return face
 
 
+def _faces_of(shape):
+    if shape is None:
+        return []
+    try:
+        return list(shape.faces())
+    except Exception:
+        return []
+
+
+def sketch_regions(context, sketch, min_area=1e-14):
+    """Every region of the sketch, like other CAD tools show them: closed contours are split
+    against each other (a ring and its hole are two regions, two overlapping contours three).
+    Faces in world space, oriented along the sketch normal."""
+    b3d = _ensure_build123d()
+    wires, normal = sketch_to_wires(context, sketch)
+    contours = [b3d.Face(w) for w in wires if w.is_closed]
+    pieces = []
+    for f in contours:
+        if not pieces:
+            pieces = [f]
+            continue
+        new = []
+        for p in pieces:
+            new += [x for x in _faces_of(p & f) if x.area > min_area]
+            new += [x for x in _faces_of(p - f) if x.area > min_area]
+        rest = [f]
+        for p in pieces:
+            rest = [x for r in rest for x in _faces_of(r - p) if x.area > min_area]
+        pieces = new + rest
+    n = b3d.Vector(normal)
+    out = []
+    for p in pieces:
+        if p.normal_at(p.center()).dot(n) < 0:
+            p = -p
+        out.append(p)
+    return out
+
+
+def region_interior_point(face):
+    """A point inside the region (centroid of its largest triangle): the centre of a ring is not."""
+    verts, tris = face.tessellate(1e-6)
+    best, area = None, -1.0
+    for a, b, c in tris:
+        A, B, C = verts[a], verts[b], verts[c]
+        ar = (B - A).cross(C - A).length
+        if ar > area:
+            best, area = (A + B + C) / 3, ar
+    return best
+
+
+def region_faces(context, sketch, probes, tol=1e-7):
+    """Regions of the sketch that contain one of the probe points (world coordinates)."""
+    b3d = _ensure_build123d()
+    pts = [b3d.Vector(*p) for p in probes]
+    return [f for f in sketch_regions(context, sketch) if any(f.distance_to(q) <= tol for q in pts)]
+
+
 def shape_to_mesh_object(shape, name, tolerance=0.0005, existing=None):
     """Tessellation vers un objet mesh Blender - shading lisse, aretes
     vives aux frontieres. Le mesh est une VUE, jamais a editer."""
