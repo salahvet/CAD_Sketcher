@@ -73,6 +73,14 @@ class VIEW3D_PT_sketcher_part_tree(VIEW3D_PT_sketcher_base):
                 label = row.row()
                 label.enabled = not off
                 label.label(text=_feature_text(i, feat), icon=_ICONS.get(op, "DOT"))
+                if op in ("pad", "pocket"):
+                    sk = next((x for x in context.scene.sketcher.entities.sketches
+                               if x.name == feat.get("sketch")), None)
+                    if sk is not None:
+                        row.operator(declarations.Operators.SetActiveSketch, text="",
+                                     icon="GREASEPENCIL").index = sk.slvs_index
+                e = row.operator(declarations.Operators.OCCTEditFeature, text="", icon="PREFERENCES")
+                e.part, e.index = part_name, i
                 p = row.operator(declarations.Operators.OCCTRemoveFeature,
                                  text="", icon="TRASH")
                 p.part = part_name

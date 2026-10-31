@@ -77,6 +77,7 @@ class Operators(str, Enum):
     OCCTDerive = "view3d.slvs_occt_derive"
     OCCTMirror = "view3d.slvs_occt_mirror"
     OCCTToggleFeature = "view3d.slvs_occt_toggle_feature"
+    OCCTEditFeature = "view3d.slvs_occt_edit_feature"
     OCCTProjectEdges = "view3d.slvs_occt_project_edges"
     OCCTPickRegions = "view3d.slvs_occt_pick_regions"
     AssemblyPivot = "view3d.slvs_assembly_pivot"

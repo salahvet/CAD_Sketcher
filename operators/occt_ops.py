@@ -944,6 +944,148 @@ class View3D_OT_slvs_occt_toggle_feature(Operator):
         return {"FINISHED"}
 
 
+class View3D_OT_slvs_occt_edit_feature(Operator):
+    """Edit this feature's settings (extent, depth, radius, count...) and recompute the part"""
+
+    bl_idname = Operators.OCCTEditFeature
+    bl_label = "Edit Feature"
+    bl_options = {"REGISTER", "UNDO"}
+
+    part: bpy.props.StringProperty(options={"HIDDEN"})
+    index: IntProperty(default=-1, options={"HIDDEN"})
+    # pad / pocket
+    extent: EnumProperty(name="Extent", items=EXTENTS, default="BLIND")
+    depth: FloatProperty(name="Depth", default=0.003, min=0.0001, soft_max=10.0, unit="LENGTH")
+    reverse: BoolProperty(name="Reverse", default=False)
+    keep_regions: BoolProperty(name="Picked Regions Only", default=True,
+                               description="Keep the regions stored in the feature (otherwise the whole sketch)")
+    update_regions: BoolProperty(name="Use Current Region Picks", default=False,
+                                 description="Replace the stored regions by the ones picked now with OCCT Pick Regions")
+    # fillet / chamfer
+    radius: FloatProperty(name="Radius", default=0.0005, min=0.00001, soft_max=1.0, unit="LENGTH")
+    chamfer: BoolProperty(name="Chamfer", default=False)
+    # pattern
+    kind: EnumProperty(name="Type", items=[("linear", "Linear", ""), ("circular", "Circular", "")])
+    count: IntProperty(name="Count", default=2, min=2, max=1000)
+    spacing: FloatProperty(name="Spacing", default=0.001, unit="LENGTH", precision=5)
+    direction: EnumProperty(name="Direction", items=PATTERN_DIRECTIONS)
+    axis: EnumProperty(name="Axis", items=PATTERN_DIRECTIONS, default="NORMAL")
+    angle: FloatProperty(name="Total Angle", default=360.0, min=-360.0, max=360.0)
+    # mirror / derive
+    plane: EnumProperty(name="Plane", items=MIRROR_PLANES, default="XY")
+    mirror: EnumProperty(name="Mirror", items=[("NONE", "None", "")] + MIRROR_PLANES, default="NONE")
+    fuse: BoolProperty(name="Keep Original", default=True)
+
+    def _feat(self, context):
+        recipe = get_recipes(context.scene).get(self.part)
+        if recipe is None or not (0 <= self.index < len(recipe)):
+            return None
+        return recipe[self.index]
+
+    def invoke(self, context, event):
+        f = self._feat(context)
+        if f is None:
+            return {"CANCELLED"}
+        op = f.get("op")
+        if op in ("pad", "pocket"):
+            self.extent = feature_extent(f)
+            self.depth = f.get("depth", 0.003)
+            self.reverse = f.get("reverse", False)
+            self.keep_regions = bool(f.get("regions"))
+            self.update_regions = False
+        elif op in ("fillet", "chamfer"):
+            self.radius = f.get("radius", 0.0005)
+            self.chamfer = op == "chamfer"
+        elif op == "pattern":
+            self.kind = f.get("kind", "linear")
+            self.count = int(f.get("count", 2))
+            self.spacing = f.get("spacing", 0.001)
+            self.direction = f.get("direction", "SKETCH_X")
+            self.axis = f.get("axis", "NORMAL")
+            self.angle = f.get("angle", 360.0)
+        elif op == "mirror":
+            self.plane = f.get("plane", "XY")
+            self.fuse = f.get("fuse", True)
+        elif op == "derive":
+            self.mirror = f.get("mirror", "NONE")
+        return context.window_manager.invoke_props_dialog(self, width=300, title=f"Edit {op.capitalize()}")
+
+    def draw(self, context):
+        f = self._feat(context)
+        if f is None:
+            return
+        op = f.get("op")
+        col = self.layout.column()
+        if op in ("pad", "pocket"):
+            col.label(text=f"Sketch: {f.get('sketch', '?')}", icon="GREASEPENCIL")
+            col.prop(self, "extent")
+            if self.extent in ("BLIND", "MID_PLANE"):
+                col.prop(self, "depth")
+            if self.extent in ("BLIND", "THROUGH_ALL", "UP_TO_NEXT", "UP_TO_LAST"):
+                col.prop(self, "reverse")
+            if f.get("regions"):
+                col.prop(self, "keep_regions", text=f"Picked Regions Only ({len(f['regions'])})")
+            n = len(region_picks(context.scene, f.get("sketch", "")))
+            if n:
+                col.prop(self, "update_regions", text=f"Use Current Region Picks ({n})")
+            if self.extent == "UP_TO_CURSOR":
+                col.label(text="Depth: up to the 3D cursor (its current position)", icon="INFO")
+        elif op in ("fillet", "chamfer"):
+            col.prop(self, "chamfer")
+            col.prop(self, "radius", text="Length" if self.chamfer else "Radius")
+        elif op == "pattern":
+            col.prop(self, "kind", expand=True)
+            col.prop(self, "count")
+            if self.kind == "linear":
+                col.prop(self, "direction")
+                col.prop(self, "spacing")
+            else:
+                col.prop(self, "axis")
+                col.prop(self, "angle")
+        elif op == "mirror":
+            col.prop(self, "plane")
+            col.prop(self, "fuse")
+        elif op == "derive":
+            col.label(text=f"Source: {f.get('from', '?')}", icon="DUPLICATE")
+            col.prop(self, "mirror")
+            col.label(text="Switch source features on / off in the Part Tree", icon="INFO")
+
+    def execute(self, context: Context):
+        recipes = get_recipes(context.scene)
+        recipe = recipes.get(self.part)
+        if recipe is None or not (0 <= self.index < len(recipe)):
+            return {"CANCELLED"}
+        f = recipe[self.index]
+        op = f.get("op")
+        if op in ("pad", "pocket"):
+            f.update(extent=self.extent, depth=self.depth, reverse=self.reverse,
+                     symmetric=self.extent == "MID_PLANE")
+            if self.extent == "UP_TO_CURSOR":
+                f["probe"] = list(context.scene.cursor.location)
+            picks = region_picks(context.scene, f.get("sketch", ""))
+            if self.update_regions and picks:
+                f["regions"] = picks
+            elif not self.keep_regions:
+                f.pop("regions", None)
+        elif op in ("fillet", "chamfer"):
+            f["op"] = "chamfer" if self.chamfer else "fillet"
+            f["radius"] = self.radius
+        elif op == "pattern":
+            f.update(kind=self.kind, count=self.count)
+            if self.kind == "linear":
+                f.update(direction=self.direction, spacing=self.spacing)
+            else:
+                f.update(axis=self.axis, angle=self.angle)
+        elif op == "mirror":
+            f.update(plane=self.plane, fuse=self.fuse)
+        elif op == "derive":
+            f["mirror"] = self.mirror
+        set_recipes(context.scene, recipes)
+        recompute_part(context, self.part, report=self.report)
+        self.report({"INFO"}, f"{op.capitalize()} {self.index + 1} updated")
+        return {"FINISHED"}
+
+
 class View3D_OT_slvs_occt_remove_last(Operator):
     """Remove the last feature of a part and recompute"""
 
@@ -1167,7 +1309,7 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
 classes = (View3D_OT_slvs_occt_pad, View3D_OT_slvs_occt_pocket,
            View3D_OT_slvs_occt_fillet, View3D_OT_slvs_occt_pattern,
            View3D_OT_slvs_occt_derive, View3D_OT_slvs_occt_mirror,
-           View3D_OT_slvs_occt_toggle_feature, View3D_OT_slvs_occt_remove_last,
+           View3D_OT_slvs_occt_toggle_feature, View3D_OT_slvs_occt_edit_feature, View3D_OT_slvs_occt_remove_last,
            View3D_OT_slvs_occt_remove_feature, View3D_OT_slvs_occt_recompute,
            View3D_OT_slvs_occt_pick_edges)
 _register, _unregister = register_classes_factory(classes)
