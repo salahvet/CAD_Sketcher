@@ -27,6 +27,7 @@ class VIEW3D_MT_sketcher_functions(Menu):
         layout.operator(Operators.OCCTMirror, icon="MOD_MIRROR")
         layout.operator(Operators.OCCTDerive, icon="DUPLICATE")
         layout.operator(Operators.OCCTRemoveLast, icon="TRASH")
+        layout.operator(Operators.OCCTQuadMesh, icon="MOD_SUBSURF")
         layout.separator()
         layout.operator(Operators.AssemblyPivot, icon="CON_PIVOT")
         layout.operator(Operators.CheckInterference, icon="MOD_PHYSICS")

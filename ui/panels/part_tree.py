@@ -105,3 +105,4 @@ class VIEW3D_PT_sketcher_part_tree(VIEW3D_PT_sketcher_base):
         row = layout.row(align=True)
         row.operator(declarations.Operators.OCCTRecompute, icon="FILE_REFRESH")
         row.operator(declarations.Operators.OCCTTidyView, icon="HIDE_ON")
+        layout.operator(declarations.Operators.OCCTQuadMesh, icon="MOD_SUBSURF")
