@@ -93,7 +93,8 @@ class Curve:
 
 
 class Mesher:
-    def __init__(self, solid, tolerance, max_edge, max_angle_deg, corner_deg, cdt):
+    def __init__(self, solid, tolerance, max_edge, max_angle_deg, corner_deg, cdt, guides=None):
+        self.guides = guides
         TopAbs, TopExp, BRep, BRepAdaptor, BRepTools, GeomAbs, gp_Pnt, gp_Vec, gp_Pnt2d = _occ()
         self.O = (TopAbs, TopExp, BRep, BRepAdaptor, BRepTools, GeomAbs, gp_Pnt, gp_Vec, gp_Pnt2d)
         self.shape = getattr(solid, "wrapped", solid)
@@ -270,12 +271,14 @@ class Mesher:
         if c.kind == "edge":
             q = F["c2"][pc["use"]].Value(p)
             return (q.X(), q.Y())
-        a, b = c.uvA, c.uvB
-        return (a[0] + (b[0] - a[0]) * p, a[1] + (b[1] - a[1]) * p)
+        return c.uv_at(p)
 
     def piece_poly(self, F, pc, n=None):
         if n is None:
-            n = 2 if (pc["c"].kind == "chord" or self.edges[pc["c"].ei]["line"]) else 24
+            if pc["c"].kind == "chord":
+                n = 2 if len(pc["c"].poly) == 2 else 3 * len(pc["c"].poly)
+            else:
+                n = 2 if self.edges[pc["c"].ei]["line"] else 24
         out = []
         for k in range(n + 1):
             p = pc["pa"] + (pc["pb"] - pc["pa"]) * k / n
@@ -324,10 +327,29 @@ class Mesher:
         q = self.edges[ei]["c"].Value(p)
         return (q.X(), q.Y(), q.Z())
 
-    def new_chord(self, F, uvA, uvB, na, nb):
+    def new_chord(self, F, uvA, uvB, na, nb, poly=None):
         cid = ("c", len(self.curves))
         c = self.curves[cid] = Curve(cid, "chord")
-        c.fi, c.uvA, c.uvB = F["fi"], uvA, uvB
+        pts = [uvA] + list(poly[1:-1] if poly else []) + [uvB]
+        acc = [0.0]
+        for k in range(len(pts) - 1):
+            acc.append(acc[-1] + _norm(_sub(self.S(F, pts[k + 1]), self.S(F, pts[k]))))
+        tot = acc[-1] or 1.0
+        c.fi, c.uvA, c.uvB, c.poly, c.cum = F["fi"], uvA, uvB, pts, [a / tot for a in acc]
+
+        def uv_at(f, c=c):
+            P, C = c.poly, c.cum
+            if f <= 0:
+                return P[0]
+            if f >= 1:
+                return P[-1]
+            k = 0
+            while k < len(C) - 2 and C[k + 1] < f:
+                k += 1
+            a = (f - C[k]) / (C[k + 1] - C[k]) if C[k + 1] > C[k] else 0.0
+            return (P[k][0] + (P[k + 1][0] - P[k][0]) * a, P[k][1] + (P[k + 1][1] - P[k][1]) * a)
+
+        c.uv_at = uv_at
         c.add_node(0.0, na)
         c.add_node(1.0, nb)
         fwd = {"c": c, "pa": 0.0, "pb": 1.0, "na": na, "nb": nb, "use": None}
@@ -357,13 +379,13 @@ class Mesher:
                     best = (r[0], k, p)
         return best
 
-    def cut(self, F, region, ka, kb):
+    def cut(self, F, region, ka, kb, poly=None):
         """Split region by a chord between the start nodes of region[ka] and region[kb]."""
         pa, pb = region[ka], region[kb]
         na, nb = pa["na"], pb["na"]
         uvA = self.piece_uv(F, pa, pa["pa"])
         uvB = self.piece_uv(F, pb, pb["pa"])
-        fwd, bwd = self.new_chord(F, uvA, uvB, na, nb)
+        fwd, bwd = self.new_chord(F, uvA, uvB, na, nb, poly)
         n = len(region)
         if ka < kb:
             r1 = region[ka:kb] + [bwd]
@@ -406,10 +428,18 @@ class Mesher:
         F["sigma"] = sigma
         region = list(outer)
 
-        # holes
         regions = [list(outer)]
-        for hole in loops[1:]:
-            regions = self.place_hole(F, regions, list(hole), sigma)
+        holes = [list(h) for h in loops[1:]]
+
+        # guide lines drawn by the user: they cut the face first
+        guides = self.face_guides(F)
+        if guides:
+            regions, holes = self.insert_guides(F, regions, holes, guides)
+            self.info["guides_used"] = self.info.get("guides_used", 0) + 1
+
+        # remaining holes
+        for hole in holes:
+            regions = self.place_hole(F, regions, hole, sigma)
 
         # reflex corners: motorcycle cuts
         done, guard = [], 0
@@ -450,6 +480,171 @@ class Mesher:
 
         for r in done:
             self.make_patches(F, r, sigma)
+
+    # ---- user guides ------------------------------------------------------------------------
+    def face_guides(self, F):
+        """Guide polylines in (u, v) for a planar face facing the guide sketch, else []."""
+        if not self.guides:
+            return []
+        from OCP.GeomAbs import GeomAbs_Plane
+        surf = F["surf"]
+        if surf.GetType() != GeomAbs_Plane:
+            return []
+        pln = surf.Plane()
+        O = pln.Location()
+        N = pln.Axis().Direction()
+        X, Y = pln.XAxis().Direction(), pln.YAxis().Direction()
+        O = (O.X(), O.Y(), O.Z())
+        N = (N.X(), N.Y(), N.Z())
+        X = (X.X(), X.Y(), X.Z())
+        Y = (Y.X(), Y.Y(), Y.Z())
+        n = self.guides["normal"]
+        dn = sum(n[k] * N[k] for k in range(3))
+        if abs(dn) < math.cos(math.radians(15)):
+            return []
+        out = []
+        for line in self.guides["lines"]:
+            uv = []
+            for p in line:
+                t = sum((O[k] - p[k]) * N[k] for k in range(3)) / dn
+                q = [p[k] + t * n[k] - O[k] for k in range(3)]
+                uv.append((sum(q[k] * X[k] for k in range(3)), sum(q[k] * Y[k] for k in range(3))))
+            out.append(uv)
+        return out
+
+    def _nearest_on(self, F, pieces, xy):
+        best = None
+        for k, pc in enumerate(pieces):
+            poly = self.piece_poly(F, pc, None if pc["c"].kind == "chord" else 48)
+            for j in range(len(poly) - 1):
+                a, b = poly[j][1], poly[j + 1][1]
+                e = _sub(b, a)
+                L2 = _dot(e, e)
+                t = 0.0 if L2 == 0 else max(0.0, min(1.0, _dot(_sub(xy, a), e) / L2))
+                q = (a[0] + e[0] * t, a[1] + e[1] * t)
+                d = _norm(_sub(q, xy))
+                if best is None or d < best[0]:
+                    best = (d, k, poly[j][0] + (poly[j + 1][0] - poly[j][0]) * t)
+        return best
+
+    def _crossings(self, F, regions, g):
+        """Positions (segment index + t, point) where polyline g crosses a chord of the regions."""
+        out = []
+        for r in regions:
+            for pc in r:
+                if pc["c"].kind != "chord":
+                    continue
+                poly = self.piece_poly(F, pc)
+                for a in range(len(g) - 1):
+                    p, q = g[a], g[a + 1]
+                    d1 = _sub(q, p)
+                    for j in range(len(poly) - 1):
+                        r_, s_ = poly[j][1], poly[j + 1][1]
+                        d2 = _sub(s_, r_)
+                        den = _cross(d1, d2)
+                        if abs(den) < 1e-30:
+                            continue
+                        t = _cross(_sub(r_, p), d2) / den
+                        u = _cross(_sub(r_, p), d1) / den
+                        if 0 <= u <= 1 and 0 < t < 1:
+                            pos = a + t
+                            x = (p[0] + d1[0] * t, p[1] + d1[1] * t)
+                            total = sum(_norm(_sub(g[k + 1], g[k])) for k in range(len(g) - 1))
+                            along = sum(_norm(_sub(g[k + 1], g[k])) for k in range(a)) + t * _norm(d1)
+                            if 0.02 * total < along < 0.98 * total:
+                                out.append((pos, x))
+        return sorted(set(out))
+
+    @staticmethod
+    def _split_polyline(g, marks):
+        events = [(float(k), g[k], False) for k in range(len(g))] + [(pos, x, True) for pos, x in marks]
+        events.sort(key=lambda e: e[0])
+        out, cur = [], []
+        for pos, x, is_mark in events:
+            if not cur or _norm(_sub(x, cur[-1])) > 1e-12:
+                cur.append(x)
+            if is_mark:
+                if len(cur) >= 2:
+                    out.append(cur)
+                cur = [x]
+        if len(cur) >= 2:
+            out.append(cur)
+        return out
+
+    def insert_guides(self, F, regions, holes, guides):
+        S, US = (lambda uv: self.S(F, uv)), (lambda xy: self.US(F, xy))
+        pieces = [[S(p) for p in g] for g in guides if len(g) >= 2]
+        allxy = [xy for pc in regions[0] for _, xy in self.piece_poly(F, pc, 8)]
+        diag = math.hypot(max(x for x, _ in allxy) - min(x for x, _ in allxy),
+                          max(y for _, y in allxy) - min(y for _, y in allxy))
+        snap = max(0.0005, 0.02 * diag)
+        node_snap = 0.3 * snap
+        progress = True
+        while pieces and progress:
+            progress = False
+            for g in list(pieces):
+                # a guide that crosses a cut already in place is split there first
+                xs = self._crossings(F, regions, g)
+                if xs:
+                    pieces.remove(g)
+                    pieces += self._split_polyline(g, xs)
+                    progress = True
+                    break
+                L = sum(_norm(_sub(g[k + 1], g[k])) for k in range(len(g) - 1))
+                acc, mid = 0.0, g[0]
+                for k in range(len(g) - 1):
+                    l = _norm(_sub(g[k + 1], g[k]))
+                    if acc + l >= L / 2:
+                        f = (L / 2 - acc) / l if l else 0.0
+                        mid = (g[k][0] + (g[k + 1][0] - g[k][0]) * f, g[k][1] + (g[k + 1][1] - g[k][1]) * f)
+                        break
+                    acc += l
+                ri = next((i for i, r in enumerate(regions) if self.inside(F, r, mid)), None)
+                if ri is None or any(_base._point_in_loops(mid, [self.region_poly(F, h)]) for h in holes):
+                    pieces.remove(g)  # outside this face
+                    progress = True
+                    continue
+                r = regions[ri]
+                ends = []
+                for xy in (g[0], g[-1]):
+                    cand = [("r", None, self._nearest_on(F, r, xy))]
+                    for hi, h in enumerate(holes):
+                        if self.inside(F, r, self.region_poly(F, h)[0]):
+                            cand.append(("h", hi, self._nearest_on(F, h, xy)))
+                    cand = [c for c in cand if c[2] is not None]
+                    best = min(cand, key=lambda c: c[2][0])
+                    ends.append(best if best[2][0] <= snap else None)
+                if None in ends:
+                    continue
+                if ends[0][0] == "h" and ends[1][0] == "h":
+                    continue
+                pieces.remove(g)
+                progress = True
+                if ends[0][0] == "h":
+                    ends = ends[::-1]
+                    g = g[::-1]
+                (_, _, (_, kr, pr)), (kind2, hi, (_, k2, p2)) = ends
+                if kind2 == "h":
+                    h = holes.pop(hi)
+                    ih = self.snap_or_split(F, h, k2, p2, node_snap)
+                    ir = self.snap_or_split(F, r, kr, pr, node_snap)
+                    regions[ri] = self._join(F, r, ir, h, ih, [US(x) for x in g])
+                    continue
+                ka = self.snap_or_split(F, r, kr, pr, node_snap)
+                aref = r[ka]
+                # second end: positions may have shifted after the first split
+                d2 = self._nearest_on(F, r, g[-1])
+                kb = self.snap_or_split(F, r, d2[1], d2[2], node_snap)
+                bref = r[kb]
+                ka = next(j for j, pc in enumerate(r) if pc is aref)
+                kb = next(j for j, pc in enumerate(r) if pc is bref)
+                if ka == kb or aref["na"] == bref["na"]:
+                    continue
+                r1, r2 = self.cut(F, r, ka, kb, [US(x) for x in g])
+                regions[ri:ri + 1] = [r1, r2]
+        if pieces:
+            self.info["warnings"].append(f"face {F['fi']}: {len(pieces)} guide piece(s) not connected")
+        return regions, holes
 
     def region_poly(self, F, r):
         return [xy for pc in r for _, xy in self.piece_poly(F, pc, 8)[:-1]]
@@ -561,10 +756,10 @@ class Mesher:
             out += [r1, r2]
         return regions + out
 
-    def _join(self, F, region, ir, hole, ih):
+    def _join(self, F, region, ir, hole, ih, poly=None):
         uvA = self.piece_uv(F, region[ir], region[ir]["pa"])
         uvB = self.piece_uv(F, hole[ih], hole[ih]["pa"])
-        fwd, bwd = self.new_chord(F, uvA, uvB, region[ir]["na"], hole[ih]["na"])
+        fwd, bwd = self.new_chord(F, uvA, uvB, region[ir]["na"], hole[ih]["na"], poly)
         return region[ir:] + region[:ir] + [fwd] + hole[ih:] + hole[:ih] + [bwd]
 
     # ---- patches ----------------------------------------------------------------------------
@@ -818,7 +1013,7 @@ class Mesher:
                 F = self.faces[c.fi]
                 for j in range(1, n):
                     p = p0 + (p1 - p0) * j / n
-                    uv = (c.uvA[0] + (c.uvB[0] - c.uvA[0]) * p, c.uvA[1] + (c.uvB[1] - c.uvA[1]) * p)
+                    uv = c.uv_at(p)
                     pts.append((vid(("s", cid, k, j), self.lift(F, uv)), p))
             pts.append((nid_v(n1), p1))
             samples[s] = pts
@@ -987,10 +1182,11 @@ class Mesher:
         else:
             raise LayoutError("layout did not converge")
 
-        out_faces, face_of = [], []
-        for fi, quads in patch_faces:
+        out_faces, face_of, patch_of = [], [], []
+        for pi, (fi, quads) in enumerate(patch_faces):
             out_faces += quads
             face_of += [fi] * len(quads)
+            patch_of += [pi] * len(quads)
         # fallback faces
         for fi, loops in self.fallback_loops.items():
             F = self.faces[fi]
@@ -1018,8 +1214,10 @@ class Mesher:
                 quads = [q[::-1] for q in quads]
             out_faces += quads
             face_of += [fi] * len(quads)
+            patch_of += [-1] * len(quads)
             self.info["fallback"] += 1
         self.verts = verts
+        self.patch_of = patch_of
         return verts, out_faces, face_of
 
     def _plain_loops(self, F):
@@ -1067,15 +1265,20 @@ class Mesher:
         return sharp
 
 
-def quad_mesh(solid, tolerance=0.0001, max_edge=0.0, max_angle_deg=45.0, corner_deg=40.0, cdt=None):
-    """Return (verts, faces, sharp_edges, info); lengths in the solid's units."""
-    m = Mesher(solid, tolerance, max_edge, max_angle_deg, corner_deg, cdt)
+def quad_mesh(solid, tolerance=0.0001, max_edge=0.0, max_angle_deg=45.0, corner_deg=40.0, cdt=None,
+              guides=None):
+    """Return (verts, faces, sharp_edges, info); lengths in the solid's units.
+
+    guides: {"normal": (x, y, z), "lines": [[(x, y, z), ...], ...]} drawn by the user (solid
+    coordinates); they cut the planar faces that face that normal before the automatic layout."""
+    m = Mesher(solid, tolerance, max_edge, max_angle_deg, corner_deg, cdt, guides)
     verts, faces, face_of = m.run()
     sharp = m.sharp_edges()
     keep = [k for k, q in enumerate(faces) if len(set(q)) == 4]
     faces = [faces[k] for k in keep]
     info = m.info
     info["face_of"] = [face_of[k] for k in keep]
+    info["patch_of"] = [m.patch_of[k] for k in keep]
     info["degenerate"] = sum(1 for q in faces if _base._bad_quad([verts[k] for k in q]))
     info["verts"] = len(verts)
     info["quads"] = len(faces)

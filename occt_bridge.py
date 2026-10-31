@@ -242,3 +242,70 @@ def shape_edges_object(shape, name, existing=None, samples=24):
     obj = bpy.data.objects.new(name, cu)
     bpy.context.collection.objects.link(obj)
     return obj
+
+
+def sketch_guides(context, sketch, arc_step_deg=6.0, bezier_steps=24):
+    """Lines, arcs and Bézier curves of a sketch as 3D polylines (world space), chained where
+    exactly two of them meet. Used as retopology guides by OCCT Quad Mesh."""
+    from mathutils import Vector
+
+    M = sketch.wp.matrix_basis
+    P = lambda co: tuple(M @ Vector((co[0], co[1], 0.0)))
+    ents = context.scene.sketcher.entities
+    items = []  # (start point id, end point id, polyline)
+    for e in ents.lines2D:
+        if e.sketch_i == sketch.slvs_index:
+            items.append((e.p1.slvs_index, e.p2.slvs_index, [P(e.p1.co), P(e.p2.co)]))
+    for e in ents.arcs:
+        if e.sketch_i != sketch.slvs_index:
+            continue
+        ct, a, b = e.ct.co, e.start.co, e.end.co
+        a0 = math.atan2(a[1] - ct[1], a[0] - ct[0])
+        a1 = math.atan2(b[1] - ct[1], b[0] - ct[0])
+        r = math.hypot(a[0] - ct[0], a[1] - ct[1])
+        da = (a1 - a0) % (2.0 * math.pi) or 2.0 * math.pi
+        n = max(2, int(math.degrees(da) / arc_step_deg) + 1)
+        pts = [P((ct[0] + r * math.cos(a0 + da * k / n), ct[1] + r * math.sin(a0 + da * k / n))) for k in range(n + 1)]
+        items.append((e.start.slvs_index, e.end.slvs_index, pts))
+    for e in getattr(ents, "beziers", ()):
+        if e.sketch_i != sketch.slvs_index:
+            continue
+        c = [e.p1.co, e.ctrl1.co, e.ctrl2.co, e.p2.co]
+        pts = []
+        for k in range(bezier_steps + 1):
+            t = k / bezier_steps
+            w = ((1 - t) ** 3, 3 * t * (1 - t) ** 2, 3 * t * t * (1 - t), t ** 3)
+            pts.append(P((sum(w[i] * c[i][0] for i in range(4)), sum(w[i] * c[i][1] for i in range(4)))))
+        items.append((e.p1.slvs_index, e.p2.slvs_index, pts))
+
+    # chain through points shared by exactly two items
+    degree = {}
+    for a, b, _ in items:
+        degree[a] = degree.get(a, 0) + 1
+        degree[b] = degree.get(b, 0) + 1
+    unused = list(range(len(items)))
+    lines = []
+
+    def extend(chain, end, at_end):
+        while degree.get(end) == 2:
+            nxt = next((j for j in unused if end in (items[j][0], items[j][1])), None)
+            if nxt is None:
+                break
+            unused.remove(nxt)
+            ja, jb, jp = items[nxt]
+            seg = jp if ja == end else jp[::-1]   # seg starts at `end`
+            if at_end:
+                chain.extend(seg[1:])
+            else:
+                chain[:0] = seg[::-1][:-1]
+            end = jb if ja == end else ja
+        return chain
+
+    while unused:
+        i = unused.pop(0)
+        a, b, pts = items[i]
+        chain = extend(list(pts), b, True)
+        chain = extend(chain, a, False)
+        lines.append(chain)
+    normal = tuple((M.to_3x3() @ Vector((0, 0, 1))).normalized())
+    return {"normal": normal, "lines": lines}
