@@ -3,7 +3,7 @@ import logging
 import math
 
 import bpy
-from bpy.props import EnumProperty
+from bpy.props import EnumProperty, FloatProperty
 from bpy.types import Operator, Context
 from mathutils import Matrix, Vector
 
@@ -110,13 +110,13 @@ def _snap_axis(n, tol_deg=0.5):
     return n
 
 
-def face_frame(normal, point, origin_mode="PIVOT"):
+def face_frame(normal, point, origin_mode="PIVOT", snap_deg=0.5):
     """Workplane frame for a face: (origin, quaternion).
 
     Sketch X follows world X when possible (else world Y), Y = normal x X, so a side face reads
     like the side view and the top face like the top view. The origin is the projection of the
     world origin (the instrument's pivot) onto the plane, or the picked point."""
-    n = _snap_axis(normal.normalized())
+    n = _snap_axis(normal.normalized(), snap_deg)
     for ref in (Vector((1, 0, 0)), Vector((0, 1, 0))):
         x = ref - n * ref.dot(n)
         if x.length > 1e-6:
@@ -182,6 +182,12 @@ class View3D_OT_slvs_add_workplane_face(Operator, Operator3d):
                ("FACE", "Picked Face", "Centre of the picked mesh face (former behaviour)")],
         default="PIVOT",
     )
+    snap_angle: FloatProperty(
+        name="Snap to World Axis", default=math.radians(5.0), min=0.0, max=math.radians(45.0),
+        subtype="ANGLE",
+        description="A face normal closer than this to a world axis becomes that axis "
+                    "(a curved side then gives a clean side-view plane); 0 keeps the exact normal",
+    )
 
     def main(self, context: Context):
         sse = context.scene.sketcher.entities
@@ -199,9 +205,11 @@ class View3D_OT_slvs_add_workplane_face(Operator, Operator3d):
             normal = tri_n
         elif normal.dot(tri_n) < 0:
             normal = -normal  # keep the outward side the user clicked
-        if normal is not None and planar is False and bpy.data.objects[ob_name].get("occt_part"):
+        snap = math.degrees(self.snap_angle)
+        snapped = _snap_axis(normal.normalized(), snap) != normal.normalized()
+        if planar is False and bpy.data.objects[ob_name].get("occt_part") and not snapped:
             self.report({"WARNING"}, "Curved face: the workplane is its tangent plane at the picked point")
-        origin_co, quat = face_frame(normal, pos, self.origin_mode)
+        origin_co, quat = face_frame(normal, pos, self.origin_mode, snap)
         if self.origin_mode == "FACE":
             origin_co = pos
         origin = sse.add_point_3d(origin_co)
