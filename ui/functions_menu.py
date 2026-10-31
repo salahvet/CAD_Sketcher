@@ -17,6 +17,7 @@ class VIEW3D_MT_sketcher_functions(Menu):
         layout.separator()
         layout.label(text="3D Features")
         layout.label(text="OCCT Part (parametric)")
+        layout.operator(Operators.OCCTPickRegions, icon="SELECT_SUBTRACT")
         layout.operator(Operators.OCCTPad, icon="MESH_CUBE")
         layout.operator(Operators.OCCTPocket, icon="MOD_BOOLEAN")
         layout.operator(Operators.OCCTPickEdges, icon="RESTRICT_SELECT_OFF")

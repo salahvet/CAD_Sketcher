@@ -27,8 +27,16 @@ def _feature_text(i, feat):
     if op == "mirror":
         return f"{i+1}. Mirror {feat.get('plane', '?')}" + ("" if feat.get("fuse", True) else "  (copy only)")
     if op in ("pad", "pocket"):
-        return (f"{i+1}. {op.capitalize()}  [{feat.get('sketch','?')}]  "
-                f"d={feat.get('depth', 0):.3g}")
+        ext = feat.get("extent") or ("MID_PLANE" if feat.get("symmetric") else "BLIND")
+        how = {"BLIND": f"{feat.get('depth', 0) * 1000:.3g} mm",
+               "MID_PLANE": f"mid-plane {feat.get('depth', 0) * 1000:.3g} mm",
+               "THROUGH_ALL": "through all", "THROUGH_ALL_BOTH": "through all (both)",
+               "UP_TO_NEXT": "up to next", "UP_TO_LAST": "up to last",
+               "UP_TO_CURSOR": "up to cursor"}.get(ext, ext)
+        if feat.get("reverse") and ext in ("BLIND", "THROUGH_ALL", "UP_TO_NEXT", "UP_TO_LAST"):
+            how += ", reversed"
+        regions = f"  ({len(feat['regions'])} region{'s' if len(feat['regions']) > 1 else ''})" if feat.get("regions") else ""
+        return f"{i+1}. {op.capitalize()}  [{feat.get('sketch','?')}]  {how}{regions}"
     return f"{i+1}. {op.capitalize()}  ({feat.get('select','?')})  r={feat.get('radius', 0):.3g}"
 
 

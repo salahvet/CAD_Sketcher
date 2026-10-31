@@ -19,6 +19,26 @@ from .. import occt_bridge
 
 RECIPES_KEY = "occt_recipes"
 PICKS_KEY = "occt_edge_picks"
+REGION_PICKS_KEY = "occt_region_picks"  # {sketch name: [[x, y], ...]} in sketch coordinates
+
+
+def region_picks(scene, sketch_name):
+    try:
+        return json.loads(scene.get(REGION_PICKS_KEY, "{}")).get(sketch_name, [])
+    except Exception:
+        return []
+
+
+def set_region_picks(scene, sketch_name, points):
+    try:
+        data = json.loads(scene.get(REGION_PICKS_KEY, "{}"))
+    except Exception:
+        data = {}
+    if points:
+        data[sketch_name] = points
+    else:
+        data.pop(sketch_name, None)
+    scene[REGION_PICKS_KEY] = json.dumps(data)
 
 # solides B-rep vivants (pour la selection des aretes)
 _solid_cache = {}
@@ -182,17 +202,25 @@ def build_solid(context, recipe, report=None, skip=(), part_name="", _stack=()):
                 if report:
                     report({"WARNING"}, f"Sketch '{feat['sketch']}' introuvable")
                 continue
-            face = occt_bridge.sketch_to_face(context, sketch)
-            if face is None:
-                if report:
-                    report({"WARNING"}, f"Contour non ferme : {feat['sketch']}")
-                continue
-            depth = feat["depth"]
-            if feat.get("symmetric"):
-                body = b3d.extrude(face, amount=depth / 2.0, both=True)
+            M = sketch.wp.matrix_basis
+            if feat.get("regions"):
+                probes = [tuple(M @ Vector((p[0], p[1], 0.0))) for p in feat["regions"]]
+                faces = occt_bridge.region_faces(context, sketch, probes)
+                if not faces:
+                    if report:
+                        report({"WARNING"}, f"No region of '{feat['sketch']}' at the picked points")
+                    continue
             else:
-                body = b3d.extrude(face, amount=depth)
-            bodies[index] = (op, body, sketch.wp.matrix_basis.copy())
+                face = occt_bridge.sketch_to_face(context, sketch)
+                if face is None:
+                    if report:
+                        report({"WARNING"}, f"Contour non ferme : {feat['sketch']}")
+                    continue
+                faces = [face]
+            body = extrude_feature(faces, feat, M, solid, report)
+            if body is None:
+                continue
+            bodies[index] = (op, body, M.copy())
             if op == "pad":
                 if solid is None:
                     solid = body
@@ -223,6 +251,79 @@ def build_solid(context, recipe, report=None, skip=(), part_name="", _stack=()):
                            f"{op} impossible (rayon trop grand ?) : {e}")
 
     return solid, base_origin, normal
+
+
+EXTENTS = [
+    ("BLIND", "Blind", "Extrude by the given depth"),
+    ("MID_PLANE", "Mid-Plane", "Half the depth on each side of the sketch"),
+    ("THROUGH_ALL", "Through All", "Through the whole part, on one side"),
+    ("THROUGH_ALL_BOTH", "Through All (Both Sides)", "Through the whole part, on both sides"),
+    ("UP_TO_NEXT", "Up to Next", "Up to the next face of the part"),
+    ("UP_TO_LAST", "Up to Last", "Up to the last face of the part"),
+    ("UP_TO_CURSOR", "Up to 3D Cursor", "Up to the plane through the 3D cursor, parallel to the sketch"),
+]
+
+
+def feature_extent(feat):
+    """Extent of a pad / pocket; older recipes only have depth and symmetric."""
+    return feat.get("extent") or ("MID_PLANE" if feat.get("symmetric") else "BLIND")
+
+
+def extrude_feature(faces, feat, M, solid, report=None):
+    """Tool body of a pad / pocket: every face extruded according to the feature's extent, fused."""
+    import build123d as b3d
+    n = (M.to_3x3() @ Vector((0, 0, 1))).normalized()
+    sign = -1.0 if feat.get("reverse") else 1.0
+    d = b3d.Vector(*(n * sign))
+    ext = feature_extent(feat)
+    depth = float(feat.get("depth", 0.001))
+
+    def far():
+        """A length that crosses everything: faces and part, wherever the sketch is."""
+        L = 0.0
+        o = b3d.Vector(*M.translation)
+        for shape in [*faces] + ([solid] if solid is not None else []):
+            bb = shape.bounding_box()
+            L = max(L, bb.diagonal + (bb.center() - o).length)
+        return 2.0 * L + 0.01
+
+    bodies = []
+    for f in faces:
+        try:
+            if ext == "MID_PLANE":
+                b = b3d.extrude(f, amount=depth / 2.0, dir=d, both=True)
+            elif ext == "THROUGH_ALL":
+                b = b3d.extrude(f, amount=far(), dir=d)
+            elif ext == "THROUGH_ALL_BOTH":
+                b = b3d.extrude(f, amount=far(), dir=d, both=True)
+            elif ext in ("UP_TO_NEXT", "UP_TO_LAST"):
+                if solid is None:
+                    if report:
+                        report({"WARNING"}, "Up to Next / Last needs an existing solid: blind depth used")
+                    b = b3d.extrude(f, amount=depth, dir=d)
+                else:
+                    until = b3d.Until.NEXT if ext == "UP_TO_NEXT" else b3d.Until.LAST
+                    b = b3d.extrude(f, dir=d, until=until, target=solid)
+            elif ext == "UP_TO_CURSOR":
+                dist = (Vector(feat.get("probe", M.translation)) - M.translation).dot(n)
+                if abs(dist) < 1e-9:
+                    if report:
+                        report({"WARNING"}, "The 3D cursor is on the sketch plane: nothing to extrude")
+                    continue
+                b = b3d.extrude(f, amount=abs(dist), dir=b3d.Vector(*(n if dist > 0 else -n)))
+            else:
+                b = b3d.extrude(f, amount=depth, dir=d)
+        except Exception as e:
+            if report:
+                report({"WARNING"}, f"Extrusion failed ({ext}): {e}")
+            continue
+        bodies.append(b)
+    if not bodies:
+        return None
+    body = bodies[0]
+    for b in bodies[1:]:
+        body = body + b
+    return body
 
 
 def dependents(recipes, part_name):
@@ -441,37 +542,83 @@ def _active_sketch(context):
     return None
 
 
-class View3D_OT_slvs_occt_pad(Operator):
-    """OCCT Pad: extrude the active sketch into an exact B-rep solid.
-    Run again on the same part to fuse additional pads"""
+def _pad_parts_enum(self, context):
+    items = [("__NEW__", "New Part", "Start a new part from this sketch")]
+    items += [(k, k, "") for k in get_recipes(context.scene).keys()]
+    _pad_parts_enum.cache = items
+    return items
+
+
+class _ExtrudeProps:
+    extent: EnumProperty(name="Extent", items=EXTENTS, default="BLIND")
+    depth: FloatProperty(name="Depth", default=0.003, min=0.0001, soft_max=10.0, unit="LENGTH")
+    reverse: BoolProperty(name="Reverse", default=False, description="Extrude on the other side of the sketch")
+    use_regions: BoolProperty(name="Picked Regions Only", default=True,
+                              description="Extrude only the regions picked with OCCT Pick Regions")
+
+    def _draw_extent(self, context, col):
+        col.prop(self, "extent")
+        if self.extent in ("BLIND", "MID_PLANE"):
+            col.prop(self, "depth")
+        if self.extent in ("BLIND", "THROUGH_ALL", "UP_TO_NEXT", "UP_TO_LAST"):
+            col.prop(self, "reverse")
+        sketch = _active_sketch(context)
+        n = len(region_picks(context.scene, sketch.name)) if sketch else 0
+        row = col.row()
+        row.enabled = n > 0
+        row.prop(self, "use_regions", text=f"Picked Regions Only ({n})" if n else "Picked Regions Only (none)")
+
+    def _feature(self, context, op, sketch):
+        feat = {"op": op, "sketch": sketch.name, "depth": self.depth, "extent": self.extent,
+                "symmetric": self.extent == "MID_PLANE", "reverse": self.reverse}
+        if self.extent == "UP_TO_CURSOR":
+            feat["probe"] = list(context.scene.cursor.location)
+        picks = region_picks(context.scene, sketch.name)
+        if self.use_regions and picks:
+            feat["regions"] = picks
+        return feat
+
+
+class View3D_OT_slvs_occt_pad(Operator, _ExtrudeProps):
+    """OCCT Pad: extrude the active sketch (or its picked regions) into an exact B-rep solid,
+    as a new part or added to an existing one"""
 
     bl_idname = Operators.OCCTPad
     bl_label = "OCCT Pad"
     bl_options = {"REGISTER", "UNDO"}
 
-    depth: FloatProperty(name="Depth", default=0.1, min=0.0001,
-                         soft_max=10.0, unit="LENGTH")
-    symmetric: BoolProperty(name="Symmetric", default=False)
+    part: EnumProperty(name="Part", items=_pad_parts_enum)
 
     @classmethod
     def poll(cls, context):
         return context.mode == "OBJECT" and _active_sketch(context) is not None
 
     def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self, width=260)
+        return context.window_manager.invoke_props_dialog(self, width=300)
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.prop(self, "part")
+        self._draw_extent(context, col)
 
     def execute(self, context: Context):
         sketch = _ensure_unique_name(context, _active_sketch(context))
-        part_name = f"OCCT_{sketch.name}"
         recipes = get_recipes(context.scene)
+        if self.part in ("__NEW__", "") or self.part not in recipes:
+            part_name, i = f"OCCT_{sketch.name}", 1
+            while part_name in recipes:
+                part_name = f"OCCT_{sketch.name}.{i:03d}"
+                i += 1
+        else:
+            part_name = self.part
         recipe = recipes.setdefault(part_name, [])
-        recipe.append({"op": "pad", "sketch": sketch.name,
-                       "depth": self.depth,
-                       "symmetric": self.symmetric})
+        recipe.append(self._feature(context, "pad", sketch))
         set_recipes(context.scene, recipes)
         obj = recompute_part(context, part_name, report=self.report)
         if obj is None:
             recipe.pop()
+            if not recipe:
+                del recipes[part_name]
             set_recipes(context.scene, recipes)
             self.report({"ERROR"}, "Recompute failed (closed contour?)")
             return {"CANCELLED"}
@@ -479,24 +626,31 @@ class View3D_OT_slvs_occt_pad(Operator):
         return {"FINISHED"}
 
 
-class View3D_OT_slvs_occt_pocket(Operator):
-    """OCCT Pocket: cut the active sketch profile out of a part"""
+class View3D_OT_slvs_occt_pocket(Operator, _ExtrudeProps):
+    """OCCT Pocket: cut the active sketch profile (or its picked regions) out of a part"""
 
     bl_idname = Operators.OCCTPocket
     bl_label = "OCCT Pocket"
     bl_options = {"REGISTER", "UNDO"}
 
     part: EnumProperty(name="Part", items=_parts_enum)
-    depth: FloatProperty(name="Depth", default=0.2, min=0.0001,
-                         soft_max=10.0, unit="LENGTH")
-    symmetric: BoolProperty(name="Symmetric", default=True)
 
     @classmethod
     def poll(cls, context):
         return context.mode == "OBJECT" and _active_sketch(context) is not None
 
     def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self, width=260)
+        if not self.properties.is_property_set("extent"):
+            self.extent = "THROUGH_ALL_BOTH"
+        ob = context.active_object
+        if ob is not None and ob.name in get_recipes(context.scene):
+            self.part = ob.name
+        return context.window_manager.invoke_props_dialog(self, width=300)
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.prop(self, "part")
+        self._draw_extent(context, col)
 
     def execute(self, context: Context):
         if self.part == "NONE":
@@ -504,9 +658,7 @@ class View3D_OT_slvs_occt_pocket(Operator):
             return {"CANCELLED"}
         sketch = _ensure_unique_name(context, _active_sketch(context))
         recipes = get_recipes(context.scene)
-        recipes[self.part].append({"op": "pocket", "sketch": sketch.name,
-                                   "depth": self.depth,
-                                   "symmetric": self.symmetric})
+        recipes[self.part].append(self._feature(context, "pocket", sketch))
         set_recipes(context.scene, recipes)
         recompute_part(context, self.part, report=self.report)
         self.report({"INFO"}, f"Pocket -> {self.part}")

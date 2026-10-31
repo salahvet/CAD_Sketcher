@@ -23,7 +23,7 @@ import operator
 import bpy
 from mathutils import Vector
 
-API_VERSION = (1, 4)
+API_VERSION = (1, 5)
 
 # plans d'Al-Tasrif (VUES) -> plans d'origine de Sketcher
 PLANS = {
@@ -105,7 +105,7 @@ def evaluer(expr, parametres):
 def _substituer(obj, parametres):
     """Remplace recursivement les expressions par leur valeur."""
     if isinstance(obj, dict):
-        return {k: (v if k in ("type", "nom", "op", "sketch", "select", "plan", "kind", "direction", "axis")
+        return {k: (v if k in ("type", "nom", "op", "sketch", "select", "plan", "kind", "direction", "axis", "extent")
                     or (k == "plane")
                     else _substituer(v, parametres)) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -289,6 +289,15 @@ def executer_gabarit(gabarit, parametres=None, piece=None, context=None):
             f["count"] = int(round(float(f.get("count", 2))))
             if "center" in f:
                 f["center"] = [float(c) * k for c in f["center"]]
+        if op in ("pad", "pocket"):
+            from .operators.occt_ops import EXTENTS
+            if "extent" in f and f["extent"] not in {e[0] for e in EXTENTS}:
+                raise ErreurPont(f"{op}: unknown extent {f['extent']!r}")
+            if "regions" in f:  # points inside the chosen regions, in mm in the sketch plane
+                f["regions"] = [[float(x) * k, float(y) * k] for x, y in f["regions"]]
+            if "probe" in f:
+                f["probe"] = [float(c) * k for c in f["probe"]]
+            f["reverse"] = bool(f.get("reverse", False))
         if op == "mirror":
             if f.get("plane") not in ("XY", "XZ", "YZ"):
                 raise ErreurPont(f"mirror: plane must be XY, XZ or YZ, not {f.get('plane')!r}")
