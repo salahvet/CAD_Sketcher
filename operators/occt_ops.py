@@ -354,6 +354,57 @@ def dependents(recipes, part_name):
     return out
 
 
+def _hide_object(ob):
+    if ob is None:
+        return
+    try:
+        ob.hide_set(True)
+    except RuntimeError:  # not in the view layer
+        ob.hide_viewport = True
+
+
+def hide_used_sketch(context, sketch):
+    """A sketch consumed by an OCCT feature: hide it, its workplane and its converted objects."""
+    if sketch is None or context.scene.sketcher.active_sketch == sketch:
+        return
+    sketch.visible = False
+    if sketch.wp is not None and not sketch.wp.origin:
+        sketch.wp.visible = False
+    for attr in ("target_object", "target_curve_object"):
+        _hide_object(getattr(sketch, attr, None))
+
+
+def tidy_view(context):
+    """Hide what OCCT parts make redundant; returns (hidden, removed) counts."""
+    sse = context.scene.sketcher
+    entities = sse.entities
+    active = sse.active_sketch
+    used = {f.get("sketch") for recipe in get_recipes(context.scene).values() for f in recipe}
+    hidden = 0
+    for sk in entities.sketches:
+        if sk.name in used and sk != active:
+            before = (sk.visible, sk.wp.visible if sk.wp else False)
+            hide_used_sketch(context, sk)
+            hidden += before != (sk.visible, sk.wp.visible if sk.wp else False)
+    # workplanes with no sketch on them (left over from Add Workplane)
+    with_sketch = {sk.wp.slvs_index for sk in entities.sketches if sk.wp}
+    for wp in entities.workplanes:
+        if wp.visible and not wp.origin and wp.slvs_index not in with_sketch:
+            wp.visible = False
+            hidden += 1
+    # exact-edge objects whose part was deleted
+    removed = 0
+    for ob in list(context.scene.objects):
+        if ob.name.endswith("_Edges") and ob.type == "CURVE" and ob.parent is None \
+                and ob.name[:-6] not in bpy.data.objects:
+            data = ob.data
+            bpy.data.objects.remove(ob)
+            if data.users == 0:
+                bpy.data.curves.remove(data)
+            removed += 1
+    return hidden, removed
+
+
 def recompute_part(context, part_name, report=None, cascade=True):
     recipes = get_recipes(context.scene)
     recipe = recipes.get(part_name)
@@ -691,6 +742,7 @@ class View3D_OT_slvs_occt_pad(Operator, _ExtrudeProps):
             set_recipes(context.scene, recipes)
             self.report({"ERROR"}, "Recompute failed (closed contour?)")
             return {"CANCELLED"}
+        hide_used_sketch(context, sketch)
         self.report({"INFO"}, f"Pad -> {part_name}")
         return {"FINISHED"}
 
@@ -739,6 +791,7 @@ class View3D_OT_slvs_occt_pocket(Operator, _ExtrudeProps):
         recipes[self.part].append(self._feature(context, "pocket", sketch))
         set_recipes(context.scene, recipes)
         recompute_part(context, self.part, report=self.report)
+        hide_used_sketch(context, sketch)
         self.report({"INFO"}, f"Pocket -> {self.part}")
         return {"FINISHED"}
 
@@ -1240,6 +1293,21 @@ class View3D_OT_slvs_occt_recompute(Operator):
         return {"FINISHED"}
 
 
+class View3D_OT_slvs_occt_tidy_view(Operator):
+    """Hide the sketches, workplanes and sketch objects that OCCT parts have used,
+    hide workplanes with no sketch, and delete edge outlines left by deleted parts"""
+
+    bl_idname = Operators.OCCTTidyView
+    bl_label = "Tidy View"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context: Context):
+        hidden, removed = tidy_view(context)
+        msg = f"{hidden} item(s) hidden" + (f", {removed} orphan outline(s) deleted" if removed else "")
+        self.report({"INFO"}, msg)
+        context.area and context.area.tag_redraw()
+        return {"FINISHED"}
+
 
 class View3D_OT_slvs_occt_pick_edges(Operator):
     """CAD selection mode: hover the exact B-rep edges of the active
@@ -1395,7 +1463,7 @@ classes = (View3D_OT_slvs_occt_pad, View3D_OT_slvs_occt_pocket,
            View3D_OT_slvs_occt_derive, View3D_OT_slvs_occt_mirror,
            View3D_OT_slvs_occt_toggle_feature, View3D_OT_slvs_occt_edit_feature, View3D_OT_slvs_occt_remove_last,
            View3D_OT_slvs_occt_remove_feature, View3D_OT_slvs_occt_recompute,
-           View3D_OT_slvs_occt_pick_edges)
+           View3D_OT_slvs_occt_tidy_view, View3D_OT_slvs_occt_pick_edges)
 _register, _unregister = register_classes_factory(classes)
 
 

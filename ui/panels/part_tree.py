@@ -102,5 +102,6 @@ class VIEW3D_PT_sketcher_part_tree(VIEW3D_PT_sketcher_base):
 
         layout.operator(declarations.Operators.OCCTPickEdges,
                         icon="RESTRICT_SELECT_OFF")
-        layout.operator(declarations.Operators.OCCTRecompute,
-                        icon="FILE_REFRESH")
+        row = layout.row(align=True)
+        row.operator(declarations.Operators.OCCTRecompute, icon="FILE_REFRESH")
+        row.operator(declarations.Operators.OCCTTidyView, icon="HIDE_ON")
