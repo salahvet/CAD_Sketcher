@@ -93,8 +93,12 @@ class Curve:
 
 
 class Mesher:
-    def __init__(self, solid, tolerance, max_edge, max_angle_deg, corner_deg, cdt, guides=None):
+    def __init__(self, solid, tolerance, max_edge, max_angle_deg, corner_deg, cdt, guides=None,
+                 auto=False, across=2):
         self.guides = guides
+        self.auto = auto
+        self.strip_mode = auto
+        self.across = across
         TopAbs, TopExp, BRep, BRepAdaptor, BRepTools, GeomAbs, gp_Pnt, gp_Vec, gp_Pnt2d = _occ()
         self.O = (TopAbs, TopExp, BRep, BRepAdaptor, BRepTools, GeomAbs, gp_Pnt, gp_Vec, gp_Pnt2d)
         self.shape = getattr(solid, "wrapped", solid)
@@ -161,7 +165,7 @@ class Mesher:
             S_acc = [0.0]
             for k in range(N):
                 S_acc.append(S_acc[-1] + math.dist(pts[k], pts[k + 1]))
-            lam = (0.3 * M[-1] + 1.0) / max(length, 1e-15)
+            lam = (3.0 * M[-1] + 1.0) / max(length, 1e-15)  # mostly arc length: rungs stay across
             Md = [M[k] + lam * S_acc[k] for k in range(N + 1)]
             self.edges[i] = {"c": c, "t0": t0, "t1": t1, "va": va, "vb": vb, "ts": ts, "M": M, "Md": Md,
                              "len": length, "line": is_line}
@@ -350,6 +354,8 @@ class Mesher:
             return (P[k][0] + (P[k + 1][0] - P[k][0]) * a, P[k][1] + (P[k + 1][1] - P[k][1]) * a)
 
         c.uv_at = uv_at
+        c.across = None
+        self._last_chord = c
         c.add_node(0.0, na)
         c.add_node(1.0, nb)
         fwd = {"c": c, "pa": 0.0, "pb": 1.0, "na": na, "nb": nb, "use": None}
@@ -430,6 +436,7 @@ class Mesher:
 
         regions = [list(outer)]
         holes = [list(h) for h in loops[1:]]
+        self._reflex_skip = set()
 
         # guide lines drawn by the user: they cut the face first
         guides = self.face_guides(F)
@@ -449,9 +456,14 @@ class Mesher:
                 raise LayoutError("too many cuts")
             r = regions.pop()
             worst = None
+            skip_nodes = getattr(self, "_reflex_skip", set())
+            if guides:
+                # nodes where a guide / skeleton cut ends are already resolved
+                skip_nodes = skip_nodes | {pc["na"] for pc in r if pc["c"].kind == "chord"} | \
+                    {pc["nb"] for pc in r if pc["c"].kind == "chord"}
             for k in range(len(r)):
                 t = self.turning(F, r, k, sigma)
-                if t < -self.corner and (worst is None or t < worst[0]):
+                if t < -self.corner and r[k]["na"] not in skip_nodes and (worst is None or t < worst[0]):
                     worst = (t, k)
             if worst is None:
                 done.append(r)
@@ -466,7 +478,9 @@ class Mesher:
                 if h is not None:
                     cands.append(h)
             if not cands:
-                raise LayoutError("reflex cut")
+                self._reflex_skip = skip_nodes | {r[k]["na"]}
+                regions.append(r)
+                continue
             L, kh, ph = min(cands)
             sref = r[k]
             kt = self.snap_or_split(F, r, kh, ph, 0.25 * L)
@@ -474,12 +488,195 @@ class Mesher:
             ks = next(j for j, pc in enumerate(r) if pc is sref)
             kt = next(j for j, pc in enumerate(r) if pc is tref)
             if tref["na"] == sref["na"] or kt == ks:
-                raise LayoutError("degenerate cut")
+                self._reflex_skip = skip_nodes | {sref["na"]}
+                regions.append(r)
+                continue
             r1, r2 = self.cut(F, r, ks, kt)
             regions += [r1, r2]
 
         for r in done:
             self.make_patches(F, r, sigma)
+
+    # ---- skeleton (chordal axis) decomposition -----------------------------------------------
+    def skeleton_cuts(self, F, loops, prune=2.0):
+        """Cuts across the junctions of the shape's skeleton, as (u, v) polylines.
+
+        The boundary is sampled and triangulated (constrained Delaunay, no inner points). Triangles
+        with 3 inner edges are junctions, 2 = sleeve, 1 = end (chordal axis transform). Short
+        dead-end branches (corners, bumps) are pruned; every remaining junction triangle gives its
+        3 edges as cuts. The shape then splits into strips (one per skeleton branch) and junction
+        triangles (3 patches around one pole)."""
+        S, US = (lambda uv: self.S(F, uv)), (lambda xy: self.US(F, xy))
+        per = 0.0
+        polys = []
+        for lp in loops:
+            poly = [xy for pc in lp for _, xy in self.piece_poly(F, pc, 64)[:-1]]
+            polys.append(poly)
+            per += sum(_norm(_sub(poly[k], poly[k - 1])) for k in range(len(poly)))
+        ds = per / 900.0
+        pts, segs, loops_xy, loop_of = [], [], [], []
+        for poly in polys:
+            res = [poly[0]]
+            acc = 0.0
+            for k in range(1, len(poly) + 1):
+                a, b = poly[k - 1], poly[k % len(poly)]
+                L = _norm(_sub(b, a))
+                while acc + L >= ds:
+                    f = (ds - acc) / L if L else 0.0
+                    a = (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f)
+                    L = _norm(_sub(b, a))
+                    acc = 0.0
+                    res.append(a)
+                acc += L
+            if len(res) > 2 and _norm(_sub(res[-1], res[0])) < 0.5 * ds:
+                res.pop()
+            start = len(pts)
+            pts += res
+            loop_of += [len(loops_xy)] * len(res)
+            loops_xy.append(res)
+            n = len(res)
+            segs += [(start + k, start + (k + 1) % n) for k in range(n)]
+        tris = self.cdt(pts, segs)
+        loops_all = loops_xy
+        tris = [t for t in tris if _base._point_in_loops(
+            tuple(sum(pts[k][c] for k in t) / 3 for c in range(2)), loops_all)]
+        bnd = set((min(a, b), max(a, b)) for a, b in segs)
+        etri = {}
+        for ti, t in enumerate(tris):
+            for k in range(3):
+                e = (min(t[k], t[(k + 1) % 3]), max(t[k], t[(k + 1) % 3]))
+                etri.setdefault(e, []).append(ti)
+        inner = {e: tl for e, tl in etri.items() if len(tl) == 2 and e not in bnd}
+        tedges = [[(min(t[k], t[(k + 1) % 3]), max(t[k], t[(k + 1) % 3])) for k in range(3)] for t in tris]
+        kind = [sum(1 for e in te if e in inner) for te in tedges]
+
+        def mid(e):
+            a, b = pts[e[0]], pts[e[1]]
+            return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+
+        def centre(ti):
+            t = tris[ti]
+            return tuple(sum(pts[k][c] for k in t) / 3 for c in range(2))
+
+        def radius(ti):
+            a, b, c = (pts[k] for k in tris[ti])
+            la, lb, lc = _norm(_sub(b, c)), _norm(_sub(a, c)), _norm(_sub(a, b))
+            ar = abs(_cross(_sub(b, a), _sub(c, a))) / 2
+            return la * lb * lc / (4 * ar) if ar > 0 else 0.0
+
+        # branches between nodes (junctions / ends)
+        nodes = [ti for ti in range(len(tris)) if kind[ti] != 2]
+        branches = []  # (start tri, end tri, start edge, length)
+        seen = set()
+        for t0 in nodes:
+            for e0 in tedges[t0]:
+                if e0 not in inner or (t0, e0) in seen:
+                    continue
+                prev, e, length, pos = t0, e0, 0.0, centre(t0)
+                while True:
+                    nxt = inner[e][0] if inner[e][1] == prev else inner[e][1]
+                    length += _norm(_sub(mid(e), pos))
+                    pos = mid(e)
+                    if kind[nxt] != 2:
+                        length += _norm(_sub(centre(nxt), pos))
+                        e_last = e
+                        break
+                    e = next(x for x in tedges[nxt] if x in inner and x != e)
+                    prev = nxt
+                seen.add((t0, e0))
+                seen.add((nxt, e_last))
+                branches.append([t0, nxt, e0, e_last, length, True])
+        # prune short dead ends, repeatedly
+        changed = True
+        while changed:
+            changed = False
+            deg = {}
+            for b in branches:
+                if b[5]:
+                    deg[b[0]] = deg.get(b[0], 0) + 1
+                    deg[b[1]] = deg.get(b[1], 0) + 1
+            for b in branches:
+                if not b[5]:
+                    continue
+                for j, end in ((b[0], b[1]), (b[1], b[0])):
+                    if deg.get(end, 0) == 1 and deg.get(j, 0) >= 3 and kind[j] == 3:
+                        if b[4] < prune * radius(j):
+                            b[5] = False
+                            changed = True
+                            break
+                if changed:
+                    break
+        deg = {}
+        for b in branches:
+            if b[5]:
+                deg[b[0]] = deg.get(b[0], 0) + 1
+                deg[b[1]] = deg.get(b[1], 0) + 1
+        self.info["skel_dbg"] = [(b[0], b[1], kind[b[0]], kind[b[1]], deg.get(b[0]), deg.get(b[1]), round(b[4] * 1000, 2),
+                                  round(radius(b[0]) * 1000, 2), round(radius(b[1]) * 1000, 2)) for b in branches if b[5]]
+        # two junctions joined by a short branch form one 4-way junction (a T: the strip runs
+        # straight into the other one, no pole)
+        skip_edges = set()
+        merged = set()
+        for b in sorted((b for b in branches if b[5]), key=lambda b: b[4]):
+            j1, j2 = b[0], b[1]
+            if j1 == j2 or kind[j1] != 3 or kind[j2] != 3 or deg.get(j1, 0) < 3 or deg.get(j2, 0) < 3:
+                continue
+            if j1 in merged or j2 in merged:
+                continue
+            if b[4] < 1.0 * (radius(j1) + radius(j2)):
+                skip_edges.add((j1, b[2]))
+                skip_edges.add((j2, b[3]))
+                merged.update((j1, j2))
+        # reflex corners of the outline: junction cuts start there when one is close
+        poly0 = [xy for pc in loops[0] for _, xy in self.piece_poly(F, pc)[:-1]]
+        sg = 1.0 if sum(_cross(poly0[k - 1], poly0[k]) for k in range(len(poly0))) > 0 else -1.0
+        reflex = []
+        for li, lp in enumerate(loops):
+            for k in range(len(lp)):
+                if self.turning(F, lp, k, sg) < -math.radians(30):
+                    reflex.append((li, self.S(F, self.piece_uv(F, lp[k], lp[k]["pa"]))))
+
+        snap_of = {}
+        for ti in nodes:
+            if kind[ti] != 3:
+                continue
+            used = {}
+            for i in tris[ti]:
+                best = None
+                for li, c in reflex:
+                    if li != loop_of[i]:
+                        continue
+                    d = _norm(_sub(c, pts[i]))
+                    if d < 1.2 * radius(ti) and (best is None or d < best[0]):
+                        best = (d, c)
+                if best and (best[1] not in used or used[best[1]][0] > best[0]):
+                    if best[1] in used:
+                        snap_of.pop((ti, used[best[1]][1]), None)
+                    used[best[1]] = (best[0], i)
+                    snap_of[(ti, i)] = best[1]
+
+        def snapped(i, ti):
+            return snap_of.get((ti, i), pts[i])
+
+        cuts = []
+        for ti in nodes:
+            if kind[ti] == 3 and deg.get(ti, 0) >= 3:
+                for e in tedges[ti]:
+                    if (ti, e) in skip_edges:
+                        continue
+                    a, b = snapped(e[0], ti), snapped(e[1], ti)
+                    if _norm(_sub(a, b)) > 1e-9:
+                        cuts.append([US(a), US(b)])
+        # strip ends: where a surviving branch enters a pruned junction, cut across
+        for b in branches:
+            if not b[5]:
+                continue
+            for node, e in ((b[0], b[2]), (b[1], b[3])):
+                if kind[node] == 3 and deg.get(node, 0) == 1:
+                    a, b_ = snapped(e[0], node), snapped(e[1], node)
+                    cuts.append([US(a), US(b_)])
+        self.info["skeleton_junctions"] = self.info.get("skeleton_junctions", 0) + len(cuts) // 3
+        return cuts
 
     # ---- user guides ------------------------------------------------------------------------
     def face_guides(self, F):
@@ -499,8 +696,9 @@ class Mesher:
         X = (X.X(), X.Y(), X.Z())
         Y = (Y.X(), Y.Y(), Y.Z())
         normals = self.guides.get("normals") or [self.guides["normal"]] * len(self.guides["lines"])
+        across = self.guides.get("across") or [None] * len(self.guides["lines"])
         out = []
-        for line, n in zip(self.guides["lines"], normals):
+        for line, n, acr in zip(self.guides["lines"], normals, across):
             dn = sum(n[k] * N[k] for k in range(3))
             if abs(dn) < math.cos(math.radians(15)):
                 continue
@@ -509,7 +707,7 @@ class Mesher:
                 t = sum((O[k] - p[k]) * N[k] for k in range(3)) / dn
                 q = [p[k] + t * n[k] - O[k] for k in range(3)]
                 uv.append((sum(q[k] * X[k] for k in range(3)), sum(q[k] * Y[k] for k in range(3))))
-            out.append(uv)
+            out.append((uv, acr))
         return out
 
     def _nearest_on(self, F, pieces, xy):
@@ -527,12 +725,12 @@ class Mesher:
                     best = (d, k, poly[j][0] + (poly[j + 1][0] - poly[j][0]) * t)
         return best
 
-    def _crossings(self, F, regions, g):
+    def _crossings(self, F, regions, g, edges_too=False):
         """Positions (segment index + t, point) where polyline g crosses a chord of the regions."""
         out = []
         for r in regions:
             for pc in r:
-                if pc["c"].kind != "chord":
+                if pc["c"].kind != "chord" and not edges_too:
                     continue
                 poly = self.piece_poly(F, pc)
                 for a in range(len(g) - 1):
@@ -571,9 +769,48 @@ class Mesher:
             out.append(cur)
         return out
 
+    def _occurrence(self, F, r, nid, d):
+        """Index of the piece starting at node nid whose corner sector contains direction d
+        (a node can appear twice in a region joined to a hole)."""
+        ks = [k for k, pc in enumerate(r) if pc["na"] == nid]
+        if len(ks) <= 1:
+            return ks[0] if ks else None
+        sg = F.get("sigma", 1.0)
+        two = 2 * math.pi
+        for k in ks:
+            t_out = self.piece_tangent(F, r[k], False)
+            t_in = self.piece_tangent(F, r[k - 1], True)
+            back = (-t_in[0], -t_in[1])
+            a_d = (sg * _angle(t_out, d)) % two
+            a_b = (sg * _angle(t_out, back)) % two
+            if 0 < a_d < a_b:
+                return k
+        return ks[0]
+
     def insert_guides(self, F, regions, holes, guides):
         S, US = (lambda uv: self.S(F, uv)), (lambda xy: self.US(F, xy))
-        pieces = [[S(p) for p in g] for g in guides if len(g) >= 2]
+        raw = [([S(p) for p in g], acr) for g, acr in guides if len(g) >= 2]
+        # clip the guides to this face (they may come from a parallel face of another shape)
+        outer_poly = self.region_poly(F, regions[0])
+        hole_polys = [self.region_poly(F, h) for h in holes]
+        pieces, across_of = [], {}
+        for g, acr in raw:
+            xs = self._crossings(F, [regions[0]] + holes, g, edges_too=True)
+            for sub in (self._split_polyline(g, xs) if xs else [g]):
+                L = sum(_norm(_sub(sub[k + 1], sub[k])) for k in range(len(sub) - 1))
+                if L <= 0:
+                    continue
+                acc, m = 0.0, sub[0]
+                for k in range(len(sub) - 1):
+                    l = _norm(_sub(sub[k + 1], sub[k]))
+                    if acc + l >= L / 2:
+                        f = (L / 2 - acc) / l if l else 0.0
+                        m = (sub[k][0] + (sub[k + 1][0] - sub[k][0]) * f, sub[k][1] + (sub[k + 1][1] - sub[k][1]) * f)
+                        break
+                    acc += l
+                if _base._point_in_loops(m, [outer_poly]) and not any(_base._point_in_loops(m, [hp]) for hp in hole_polys):
+                    pieces.append(sub)
+                    across_of[id(sub)] = acr
         allxy = [xy for pc in regions[0] for _, xy in self.piece_poly(F, pc, 8)]
         diag = math.hypot(max(x for x, _ in allxy) - min(x for x, _ in allxy),
                           max(y for _, y in allxy) - min(y for _, y in allxy))
@@ -587,7 +824,9 @@ class Mesher:
                 xs = self._crossings(F, regions, g)
                 if xs:
                     pieces.remove(g)
-                    pieces += self._split_polyline(g, xs)
+                    for sub in self._split_polyline(g, xs):
+                        across_of[id(sub)] = across_of.get(id(g))
+                        pieces.append(sub)
                     progress = True
                     break
                 L = sum(_norm(_sub(g[k + 1], g[k])) for k in range(len(g) - 1))
@@ -629,6 +868,7 @@ class Mesher:
                     ih = self.snap_or_split(F, h, k2, p2, node_snap)
                     ir = self.snap_or_split(F, r, kr, pr, node_snap)
                     regions[ri] = self._join(F, r, ir, h, ih, [US(x) for x in g])
+                    self._last_chord.across = across_of.get(id(g))
                     continue
                 ka = self.snap_or_split(F, r, kr, pr, node_snap)
                 aref = r[ka]
@@ -636,11 +876,12 @@ class Mesher:
                 d2 = self._nearest_on(F, r, g[-1])
                 kb = self.snap_or_split(F, r, d2[1], d2[2], node_snap)
                 bref = r[kb]
-                ka = next(j for j, pc in enumerate(r) if pc is aref)
-                kb = next(j for j, pc in enumerate(r) if pc is bref)
-                if ka == kb or aref["na"] == bref["na"]:
+                ka = self._occurrence(F, r, aref["na"], _unit(_sub(g[1], g[0])))
+                kb = self._occurrence(F, r, bref["na"], _unit(_sub(g[-2], g[-1])))
+                if ka is None or kb is None or ka == kb or aref["na"] == bref["na"]:
                     continue
                 r1, r2 = self.cut(F, r, ka, kb, [US(x) for x in g])
+                self._last_chord.across = across_of.get(id(g))
                 regions[ri:ri + 1] = [r1, r2]
         if pieces:
             self.info["warnings"].append(f"face {F['fi']}: {len(pieces)} guide piece(s) not connected")
@@ -788,6 +1029,34 @@ class Mesher:
         turns = [self.turning(F, r, k, sigma) for k in range(len(r))]
         corners = [r[k] for k in range(len(r)) if turns[k] > self.corner]
         ix = lambda ref: next(j for j, pc in enumerate(r) if pc is ref)
+        # strips: a region bounded by cuts takes its corners from the cut ends
+        cut_sides = []  # (index of first chord piece, index after last chord piece)
+        n_r = len(r)
+        is_c = [pc["c"].kind == "chord" for pc in r]
+        if any(is_c) and not all(is_c):
+            k0 = next(k for k in range(n_r) if is_c[k] and not is_c[k - 1])
+            k = k0
+            for _ in range(n_r):
+                if is_c[k] and not is_c[k - 1]:
+                    j = k
+                    while is_c[j % n_r]:
+                        j += 1
+                    cut_sides.append((k, j % n_r))
+                k = (k + 1) % n_r
+                if k == k0:
+                    break
+        if len(cut_sides) == 2 and self.strip_mode:
+            (a0, a1), (b0, b1) = cut_sides
+            cand = [r[a0], r[a1], r[b0], r[b1]]
+            if len({id(c) for c in cand}) == 4:
+                corners = sorted(cand, key=ix)
+        elif len(cut_sides) == 1 and self.strip_mode:
+            a0, a1 = cut_sides[0]
+            ends = [r[a0], r[a1]]
+            others = sorted((k for k in range(n_r) if r[k] not in ends and turns[k] > math.radians(30)
+                             and not is_c[k] and not is_c[k - 1]), key=lambda k: -turns[k])
+            if len(others) >= 2:
+                corners = sorted(ends + [r[k] for k in others[:2]], key=ix)
 
         # 6 corners or more: split by the best inner chord between two corners
         if len(corners) >= 6:
@@ -904,7 +1173,10 @@ class Mesher:
         a = self.nodes[c.sorted[k][1]]["xyz"]
         b = self.nodes[c.sorted[k + 1][1]]["xyz"]
         L = math.dist(a, b)
-        return L / self.max_edge if self.max_edge > 0 else 0.0
+        m = L / self.max_edge if self.max_edge > 0 else 0.0
+        if getattr(c, "across", None):
+            m = max(m, round(c.across * abs(p1 - p0)) - 1e-3)
+        return m
 
     def solve(self, fallback_faces):
         """Segment counts: opposite sides of each patch equal, as few segments as possible.
@@ -1143,8 +1415,105 @@ class Mesher:
         return quads
 
     # ---- driver -----------------------------------------------------------------------------
+    def auto_guides(self):
+        """Skeleton cuts of the largest flat face of each orientation, as 3D guides."""
+        from OCP.GeomAbs import GeomAbs_Plane
+        from OCP.GProp import GProp_GProps
+        from OCP.BRepGProp import BRepGProp
+        groups = []
+        for fi in range(1, self.fmap.Extent() + 1):
+            F = self.face_ctx(fi)
+            if not F["loops"] or F["surf"].GetType() != GeomAbs_Plane:
+                continue
+            d = F["surf"].Plane().Axis().Direction()
+            n = (d.X(), d.Y(), d.Z())
+            gp = GProp_GProps()
+            fn = getattr(BRepGProp, "SurfaceProperties_s", None) or BRepGProp.SurfaceProperties
+            fn(F["face"], gp)
+            area = gp.Mass()
+            for g in groups:
+                if abs(sum(n[k] * g["n"][k] for k in range(3))) > math.cos(math.radians(5)):
+                    if area > g["area"]:
+                        g.update(F=F, area=area)
+                    g["count"] += 1
+                    g["faces"].append(F)
+                    break
+            else:
+                groups.append({"n": n, "F": F, "area": area, "count": 1, "faces": [F]})
+        lines, normals, across = [], [], []
+        # the caps: the orientation with the largest flat face (and a twin face facing it)
+        groups = [g for g in groups if g["count"] >= 2]
+        groups = sorted(groups, key=lambda g: -g["area"])[:1]
+        for g in groups:
+            F = g["F"]
+            loops = []
+            for uses in F["loops"]:
+                lp = []
+                for ei, rev in uses:
+                    c = self.edge_curve(ei)
+                    ed = self.edges[ei]
+                    pa, pb = (ed["t1"], ed["t0"]) if rev else (ed["t0"], ed["t1"])
+                    lp.append({"c": c, "pa": pa, "pb": pb, "na": None, "nb": None, "use": (ei, rev)})
+                loops.append(lp)
+            try:
+                cuts = self.skeleton_cuts(F, loops)
+            except Exception as e:
+                self.info["warnings"].append(f"skeleton: {e}")
+                continue
+            for cut in cuts:
+                lines.append([self.lift(F, uv) for uv in cut])
+                normals.append(g["n"])
+                across.append(self.across)
+            # outlines of the other flat faces (steps, pockets) become cuts of the master face,
+            # so that every level of the part shares the same patches
+            master_xy = [xy for lp in loops for pc in lp for _, xy in self.piece_poly(F, pc, 48)]
+            master_seg = list(zip(master_xy, master_xy[1:]))
+            pln = F["surf"].Plane()
+            O, N = pln.Location(), pln.Axis().Direction()
+            X, Y = pln.XAxis().Direction(), pln.YAxis().Direction()
+            O, N, X, Y = ((O.X(), O.Y(), O.Z()), (N.X(), N.Y(), N.Z()), (X.X(), X.Y(), X.Z()), (Y.X(), Y.Y(), Y.Z()))
+
+            def to_xy(p):
+                q = [p[k] - O[k] for k in range(3)]
+                d = sum(q[k] * N[k] for k in range(3))
+                q = [q[k] - d * N[k] for k in range(3)]
+                return self.S(F, (sum(q[k] * X[k] for k in range(3)), sum(q[k] * Y[k] for k in range(3))))
+
+            tol = 1e-3 * max(1e-9, max(_norm(_sub(a, b)) for a, b in master_seg)) + 2e-6
+            done_e = {ei for lp in loops for pc in lp for ei in [pc["use"][0]]}
+            for G in g["faces"]:
+                if G is F:
+                    continue
+                for (ei, rev) in G["c2"]:
+                    if ei in done_e:
+                        continue
+                    done_e.add(ei)
+                    ed = self.edges[ei]
+                    n_s = 2 if ed["line"] else 24
+                    pts3 = [self.lift_edge(ei, ed["t0"] + (ed["t1"] - ed["t0"]) * k / n_s) for k in range(n_s + 1)]
+                    mids = [to_xy(pts3[n_s // 2]), to_xy(pts3[max(1, n_s // 4)])]
+                    on_outline = all(min(_base._dist_seg(m, a, b) for a, b in master_seg) < tol for m in mids)
+                    if on_outline:
+                        continue
+                    lines.append(pts3)
+                    normals.append(g["n"])
+                    across.append(None)
+        return {"lines": lines, "normals": normals, "across": across, "normal": (0, 0, 1)} if lines else None
+
     def run(self):
         self.prepare_edges()
+        if self.auto:
+            self.reset()
+            ag = self.auto_guides()
+            if ag:
+                if self.guides:
+                    n = len(self.guides["lines"])
+                    self.guides = {"lines": list(self.guides["lines"]) + ag["lines"],
+                                   "normals": list(self.guides.get("normals") or [self.guides["normal"]] * n) + ag["normals"],
+                                   "across": list(self.guides.get("across") or [None] * n) + ag["across"],
+                                   "normal": self.guides["normal"]}
+                else:
+                    self.guides = ag
         fallback = set()
         for attempt in range(8):
             self.reset()
@@ -1266,12 +1635,12 @@ class Mesher:
 
 
 def quad_mesh(solid, tolerance=0.0001, max_edge=0.0, max_angle_deg=45.0, corner_deg=40.0, cdt=None,
-              guides=None):
+              guides=None, skeleton=False, across=2):
     """Return (verts, faces, sharp_edges, info); lengths in the solid's units.
 
     guides: {"normal": (x, y, z), "lines": [[(x, y, z), ...], ...]} drawn by the user (solid
     coordinates); they cut the planar faces that face that normal before the automatic layout."""
-    m = Mesher(solid, tolerance, max_edge, max_angle_deg, corner_deg, cdt, guides)
+    m = Mesher(solid, tolerance, max_edge, max_angle_deg, corner_deg, cdt, guides, skeleton, across)
     verts, faces, face_of = m.run()
     sharp = m.sharp_edges()
     keep = [k for k, q in enumerate(faces) if len(set(q)) == 4]
