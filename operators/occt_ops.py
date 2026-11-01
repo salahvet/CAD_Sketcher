@@ -1434,6 +1434,7 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
 
         self.hover = -1
         self.picked = set()
+        context.scene[PICKS_KEY] = "[]"  # a new pick replaces the previous one
         self._solid_ref = solid
         self._handle = bpy.types.SpaceView3D.draw_handler_add(
             self._draw, (context,), "WINDOW", "POST_VIEW")
@@ -1494,9 +1495,14 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
                 self.picked.discard(self.hover)
             else:
                 self.picked.add(self.hover)
+            # saved at once: OCCT Fillet sees the picks even if opened without Enter
+            context.scene[PICKS_KEY] = json.dumps([list(self.centers[i]) for i in sorted(self.picked)])
+            context.area.header_text_set(
+                f"Pick Edges: {len(self.picked)} edge(s) picked | click to add / remove | "
+                "Enter: fillet them | Esc: done")
             return {"RUNNING_MODAL"}
 
-        if event.type in {"RET", "NUMPAD_ENTER"}:
+        if event.type in {"RET", "NUMPAD_ENTER"} and event.value == "PRESS":
             picks = [list(self.centers[i]) for i in sorted(self.picked)]
             if picks:
                 context.scene[PICKS_KEY] = json.dumps(picks)
@@ -1509,9 +1515,11 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
                 self.report({"INFO"}, "No edge picked")
             return {"FINISHED"}
 
-        if event.type in {"ESC", "RIGHTMOUSE"}:
+        if event.type in {"ESC", "RIGHTMOUSE"} and event.value == "PRESS":
             self._finish(context)
-            return {"CANCELLED"}
+            if self.picked:
+                self.report({"INFO"}, f"{len(self.picked)} edge(s) picked: OCCT Fillet uses them (Edges: Picked Edges)")
+            return {"FINISHED"}
 
         return {"PASS_THROUGH"}
 
