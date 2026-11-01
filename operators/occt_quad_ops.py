@@ -17,10 +17,12 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
 from ..declarations import Operators
-from .. import occt_quad, occt_quad2
+from .. import occt_quad, occt_quad2, occt_strips
 from . import occt_ops
 
 SHARP_MODES = [
+    ("WEIGHT", "Bevel Weight", "Bevel weight on the sharp edges + Bevel modifier (limit: weight) before "
+                               "Subdivision; no extra geometry"),
     ("SUPPORT", "Support Loops", "Add an edge loop on each side of the sharp edges (works in every program)"),
     ("CREASE", "Crease", "Full edge crease on the sharp edges (no extra geometry; Blender and some exporters only)"),
     ("NONE", "None", "Everything is rounded by the subdivision"),
@@ -202,11 +204,13 @@ def show_preview(context, part_name, verts, faces, patch_of):
 
 def build_quad_object(context, part_name, tolerance, max_edge, max_angle, sharp_mode, support_width,
                       levels, fit, iterations, report=None, method="PATCHES", edge_length=0.0015,
-                      guide_sketch=None):
+                      guide_sketch=None, across=2, aspect=2.0, bevel_width=0.0002, bevel_segments=3):
     obj_part = context.scene.objects.get(part_name)
     solid = part_solid(context, part_name, report)
 
-    if method == "UNIFORM":
+    if method == "STRIPS":
+        verts, faces, sharp, info = occt_strips.strip_cage(solid, occt_quad.blender_cdt, tolerance, across, aspect)
+    elif method == "UNIFORM":
         verts, faces, sharp, info = occt_quad.quad_mesh(solid, edge_length, 15.0, occt_quad.blender_cdt)
     else:
         guides = guides_for(context, obj_part, guide_sketch)
@@ -221,6 +225,9 @@ def build_quad_object(context, part_name, tolerance, max_edge, max_angle, sharp_
         except ValueError:
             pass
     bm.verts.ensure_lookup_table()
+    # custom layers first: adding a layer invalidates the BMEdge references taken before
+    cl = bm.edges.layers.float.get("crease_edge") or bm.edges.layers.float.new("crease_edge")
+    bw = bm.edges.layers.float.get("bevel_weight_edge") or bm.edges.layers.float.new("bevel_weight_edge")
     sharp_edges = []
     for a, b in sharp:
         e = bm.edges.get((bv[a], bv[b]))
@@ -233,7 +240,14 @@ def build_quad_object(context, part_name, tolerance, max_edge, max_angle, sharp_
                         offset=support_width, offset_type="OFFSET", segments=2, profile=1.0,
                         affect="EDGES", clamp_overlap=True, loop_slide=True,
                         vmesh_method="ADJ")
-    crease_edges = sharp_edges if sharp_mode == "CREASE" else []
+    crease_edges = sharp_edges if sharp_mode in ("CREASE", "WEIGHT") else []  # WEIGHT: crease only during the fit
+    if crease_edges or sharp_mode == "WEIGHT":
+        for e in sharp_edges:
+            if e.is_valid:
+                e[cl] = 1.0
+                if sharp_mode == "WEIGHT":
+                    e[bw] = 1.0
+        crease_edges = []
     for e in sharp_edges:
         if e.is_valid:
             e.smooth = False
@@ -262,7 +276,23 @@ def build_quad_object(context, part_name, tolerance, max_edge, max_angle, sharp_
     if obj_part is not None:
         obj.matrix_world = obj_part.matrix_world.copy()
     obj["occt_quad_of"] = part_name
+    bev = obj.modifiers.get("Bevel")
+    if sharp_mode == "WEIGHT":
+        if bev is None:
+            bev = obj.modifiers.new("Bevel", "BEVEL")
+        bev.limit_method = "WEIGHT"
+        bev.width = bevel_width
+        bev.segments = bevel_segments
+        bev.show_viewport = False  # off during the fit (creases hold the edges instead)
+    elif bev is not None:
+        obj.modifiers.remove(bev)
+        bev = None
     mod = obj.modifiers.get("Subdivision") or obj.modifiers.new("Subdivision", "SUBSURF")
+    if bev is not None:
+        i_b = list(obj.modifiers).index(bev)
+        i_s = list(obj.modifiers).index(mod)
+        if i_b > i_s:
+            obj.modifiers.move(i_b, i_s)
     mod.levels = levels
     mod.render_levels = levels
     mod.use_limit_surface = True
@@ -272,6 +302,11 @@ def build_quad_object(context, part_name, tolerance, max_edge, max_angle, sharp_
     if fit:
         size = max(solid.bounding_box().size.X, solid.bounding_box().size.Y, solid.bounding_box().size.Z)
         stats = fit_to_surface(context, obj, _exact_bvh(solid, size), iterations)
+    if sharp_mode == "WEIGHT":
+        a = obj.data.attributes.get("crease_edge")
+        if a is not None:
+            obj.data.attributes.remove(a)
+        bev.show_viewport = True
     info["ngons"] = ngons
     return obj, info, stats
 
@@ -299,7 +334,9 @@ class View3D_OT_slvs_occt_quad_mesh(Operator):
     bl_options = {"REGISTER", "UNDO"}
 
     part: EnumProperty(name="Part", items=_parts)
-    method: EnumProperty(name="Layout", default="PATCHES", items=[
+    method: EnumProperty(name="Layout", default="STRIPS", items=[
+        ("STRIPS", "Strips (profile)", "Quad strips along the skeleton of the part's profile, extruded: "
+                                       "the way instrument cages are modelled by hand"),
         ("PATCHES", "Patches (light)", "Few large patches with continuous edge loops; density follows curvature"),
         ("UNIFORM", "Uniform (dense)", "Even density everywhere (previous method)"),
     ])
@@ -316,7 +353,13 @@ class View3D_OT_slvs_occt_quad_mesh(Operator):
                             description="Longest cage edge (0 = no limit: flat areas stay as large quads)")
     max_angle: FloatProperty(name="Max Angle", default=45.0, min=5.0, max=90.0,
                              description="Largest angle covered by one segment on curved edges (degrees)")
-    sharp_mode: EnumProperty(name="Sharp Edges", items=SHARP_MODES, default="SUPPORT")
+    sharp_mode: EnumProperty(name="Sharp Edges", items=SHARP_MODES, default="WEIGHT")
+    across: IntProperty(name="Quads Across", default=2, min=2, max=8, step=2,
+                        description="Quads across every strip (even number)")
+    aspect: FloatProperty(name="Max Quad Length", default=2.0, min=0.0, soft_max=8.0,
+                          description="Longest quad along a strip, in strip widths (0 = only where the outline bends)")
+    bevel_width: FloatProperty(name="Bevel Width", default=0.0002, min=0.0, soft_max=0.002, unit="LENGTH")
+    bevel_segments: IntProperty(name="Bevel Segments", default=3, min=1, max=8)
     support_width: FloatProperty(name="Support Width", default=0.0001, min=0.0, soft_max=0.002, unit="LENGTH",
                                  description="Distance of the support loops from the sharp edges")
     levels: IntProperty(name="Subdivision Levels", default=2, min=0, max=4)
@@ -340,7 +383,11 @@ class View3D_OT_slvs_occt_quad_mesh(Operator):
         col = self.layout.column()
         col.prop(self, "part")
         col.prop(self, "method")
-        if self.method == "UNIFORM":
+        if self.method == "STRIPS":
+            col.prop(self, "tolerance")
+            col.prop(self, "across")
+            col.prop(self, "aspect")
+        elif self.method == "UNIFORM":
             col.prop(self, "edge_length")
         else:
             col.prop(self, "guides")
@@ -348,9 +395,11 @@ class View3D_OT_slvs_occt_quad_mesh(Operator):
             col.prop(self, "max_edge")
             col.prop(self, "max_angle")
         col.prop(self, "sharp_mode")
-        row = col.row()
-        row.enabled = self.sharp_mode == "SUPPORT"
-        row.prop(self, "support_width")
+        if self.sharp_mode == "SUPPORT":
+            col.prop(self, "support_width")
+        elif self.sharp_mode == "WEIGHT":
+            col.prop(self, "bevel_width")
+            col.prop(self, "bevel_segments")
         col.prop(self, "levels")
         col.prop(self, "fit")
         row = col.row()
@@ -372,13 +421,14 @@ class View3D_OT_slvs_occt_quad_mesh(Operator):
                 context, self.part, self.tolerance, self.max_edge, self.max_angle, self.sharp_mode,
                 self.support_width, self.levels if self.fit or self.levels else 0, self.fit,
                 self.iterations, report=self.report, method=self.method, edge_length=self.edge_length,
-                guide_sketch=self._guide_sketch(context))
+                guide_sketch=self._guide_sketch(context), across=self.across - self.across % 2,
+                aspect=self.aspect, bevel_width=self.bevel_width, bevel_segments=self.bevel_segments)
         except Exception as e:
             self.report({"ERROR"}, f"Quad mesh failed: {e}")
             return {"CANCELLED"}
         msg = f"{obj.name}: {len(obj.data.polygons)} faces"
         for w in info.get("warnings", []):
-            if "guide" in w:
+            if "guide" in w or "steps" in w:
                 self.report({"WARNING"}, w)
         if info.get("free_patches"):
             msg += f", {info['free_patches']} patch(es) filled freely"
