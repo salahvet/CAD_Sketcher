@@ -97,8 +97,9 @@ class Mesher:
                  auto=False, across=2):
         self.guides = guides
         self.auto = auto
-        self.strip_mode = auto
+        self.strip_mode = auto == "skeleton"
         self.across = across
+        self.field_h = None
         TopAbs, TopExp, BRep, BRepAdaptor, BRepTools, GeomAbs, gp_Pnt, gp_Vec, gp_Pnt2d = _occ()
         self.O = (TopAbs, TopExp, BRep, BRepAdaptor, BRepTools, GeomAbs, gp_Pnt, gp_Vec, gp_Pnt2d)
         self.shape = getattr(solid, "wrapped", solid)
@@ -496,6 +497,24 @@ class Mesher:
 
         for r in done:
             self.make_patches(F, r, sigma)
+
+    def field_cuts(self, F, loops, feats):
+        """Separatrices of a smooth cross field on the face, as (u, v) polylines."""
+        try:
+            from . import occt_field
+        except ImportError:
+            import occt_field
+        polys = [[xy for pc in lp for _, xy in self.piece_poly(F, pc, 64)[:-1]] for lp in loops]
+        xs = [x for p in polys for x, _ in p]
+        ys = [y for p in polys for _, y in p]
+        area = abs(sum(_cross(polys[0][k - 1], polys[0][k]) for k in range(len(polys[0])))) / 2
+        per = sum(_norm(_sub(p[k], p[k - 1])) for p in polys for k in range(len(p)))
+        h = self.field_h or max(min(area / per * 0.6, math.hypot(max(xs) - min(xs), max(ys) - min(ys)) / 60), 1e-6)
+        cf = occt_field.CrossField(polys, feats, h, self.cdt)
+        traces = cf.separatrices()
+        self.info["field"] = {"h_mm": round(h * 1000, 3), "singularities": len(cf.sing), "traces": len(traces)}
+        self.cross_field = cf
+        return [[self.US(F, tuple(p)) for p in tr] for tr in traces]
 
     # ---- skeleton (chordal axis) decomposition -----------------------------------------------
     def skeleton_cuts(self, F, loops, prune=2.0):
@@ -1455,15 +1474,6 @@ class Mesher:
                     pa, pb = (ed["t1"], ed["t0"]) if rev else (ed["t0"], ed["t1"])
                     lp.append({"c": c, "pa": pa, "pb": pb, "na": None, "nb": None, "use": (ei, rev)})
                 loops.append(lp)
-            try:
-                cuts = self.skeleton_cuts(F, loops)
-            except Exception as e:
-                self.info["warnings"].append(f"skeleton: {e}")
-                continue
-            for cut in cuts:
-                lines.append([self.lift(F, uv) for uv in cut])
-                normals.append(g["n"])
-                across.append(self.across)
             # outlines of the other flat faces (steps, pockets) become cuts of the master face,
             # so that every level of the part shares the same patches
             master_xy = [xy for lp in loops for pc in lp for _, xy in self.piece_poly(F, pc, 48)]
@@ -1481,6 +1491,7 @@ class Mesher:
 
             tol = 1e-3 * max(1e-9, max(_norm(_sub(a, b)) for a, b in master_seg)) + 2e-6
             done_e = {ei for lp in loops for pc in lp for ei in [pc["use"][0]]}
+            feats = []
             for G in g["faces"]:
                 if G is F:
                     continue
@@ -1498,6 +1509,21 @@ class Mesher:
                     lines.append(pts3)
                     normals.append(g["n"])
                     across.append(None)
+                    feats.append([to_xy(p) for p in pts3])
+            # layout cuts: cross-field separatrices (default) or skeleton junction cuts
+            try:
+                if self.auto == "skeleton":
+                    cuts = self.skeleton_cuts(F, loops)
+                else:
+                    cuts = self.field_cuts(F, loops, feats)
+            except Exception as e:
+                import traceback
+                self.info["warnings"].append(f"layout field: {e!r} {traceback.format_exc(limit=2)}")
+                cuts = []
+            for cut in cuts:
+                lines.append([self.lift(F, uv) for uv in cut])
+                normals.append(g["n"])
+                across.append(self.across if self.auto == "skeleton" else None)
         return {"lines": lines, "normals": normals, "across": across, "normal": (0, 0, 1)} if lines else None
 
     def run(self):
@@ -1635,12 +1661,13 @@ class Mesher:
 
 
 def quad_mesh(solid, tolerance=0.0001, max_edge=0.0, max_angle_deg=45.0, corner_deg=40.0, cdt=None,
-              guides=None, skeleton=False, across=2):
+              guides=None, skeleton=False, across=2, layout=None):
     """Return (verts, faces, sharp_edges, info); lengths in the solid's units.
 
     guides: {"normal": (x, y, z), "lines": [[(x, y, z), ...], ...]} drawn by the user (solid
     coordinates); they cut the planar faces that face that normal before the automatic layout."""
-    m = Mesher(solid, tolerance, max_edge, max_angle_deg, corner_deg, cdt, guides, skeleton, across)
+    auto = layout or ("skeleton" if skeleton else False)  # "field", "skeleton" or False
+    m = Mesher(solid, tolerance, max_edge, max_angle_deg, corner_deg, cdt, guides, auto, across)
     verts, faces, face_of = m.run()
     sharp = m.sharp_edges()
     keep = [k for k, q in enumerate(faces) if len(set(q)) == 4]
