@@ -1373,14 +1373,32 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
 
     _handle = None
 
+    @staticmethod
+    def _part(context):
+        """The OCCT part to pick on: the active part, the part of the active _Quad / _Edges
+        object, or the only part of the scene."""
+        recipes = get_recipes(context.scene)
+        ob = context.active_object
+        if ob is not None:
+            for name in (ob.name, ob.get("occt_quad_of"), ob.parent.name if ob.parent else None):
+                if name and name in recipes:
+                    return name
+        return next(iter(recipes)) if len(recipes) == 1 else None
+
     @classmethod
     def poll(cls, context):
-        ob = context.active_object
-        return (context.mode == "OBJECT" and ob is not None
-                and ob.get("occt_part"))
+        if context.mode != "OBJECT":
+            cls.poll_message_set("Leave Edit / Sketch mode first")
+            return False
+        if cls._part(context) is None:
+            cls.poll_message_set("Select the OCCT part (or its _Quad mesh)")
+            return False
+        return True
 
     def invoke(self, context, event):
-        part = context.active_object.name
+        part = self._part(context)
+        ob = context.scene.objects.get(part)
+        self.M = ob.matrix_world.copy() if ob is not None else None
         solid = _solid_cache.get(part)
         if solid is None:
             recompute_part(context, part)
@@ -1400,10 +1418,14 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
         self.shader = shader
         for edge in solid.edges():
             pts = []
-            for i in range(16):
-                t = i / 15.0
+            n_s = 2 if "LINE" in str(edge.geom_type) else 48
+            for i in range(n_s):
+                t = i / (n_s - 1)
                 v = edge @ t
-                pts.append((v.X, v.Y, v.Z))
+                p = Vector((v.X, v.Y, v.Z))
+                if self.M is not None:
+                    p = self.M @ p
+                pts.append(tuple(p))
             self.samples.append(pts)
             c = edge.center()
             self.centers.append((c.X, c.Y, c.Z))
@@ -1417,7 +1439,7 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
             self._draw, (context,), "WINDOW", "POST_VIEW")
         context.window_manager.modal_handler_add(self)
         context.area.header_text_set(
-            "Pick Edges: clic = selectionner | Entree = valider | Echap = annuler")
+            "Pick Edges: click an edge to select / unselect | Enter: fillet the picked edges | Esc: cancel")
         return {"RUNNING_MODAL"}
 
     def _finish(self, context):
@@ -1449,15 +1471,19 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
                 self.hover = -1
                 return {"PASS_THROUGH"}
             mouse = Vector((event.mouse_region_x, event.mouse_region_y))
-            best, best_d = -1, 25.0
+            best, best_d = -1, 15.0
             for i, pts in enumerate(self.samples):
-                for co in pts[::3]:
+                prev = None
+                for co in pts:
                     p2 = location_3d_to_region_2d(region, rv3d, co)
-                    if p2 is None:
-                        continue
-                    d = (p2 - mouse).length
-                    if d < best_d:
-                        best, best_d = i, d
+                    if p2 is not None and prev is not None:
+                        ab = p2 - prev
+                        L2 = ab.length_squared
+                        t = 0.0 if L2 == 0 else max(0.0, min(1.0, (mouse - prev).dot(ab) / L2))
+                        d = (prev + ab * t - mouse).length
+                        if d < best_d:
+                            best, best_d = i, d
+                    prev = p2
             self.hover = best
             return {"PASS_THROUGH"}
 
