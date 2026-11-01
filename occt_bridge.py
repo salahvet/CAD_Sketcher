@@ -177,35 +177,120 @@ def region_faces(context, sketch, probes, tol=1e-7):
     return [f for f in sketch_regions(context, sketch) if any(f.distance_to(q) <= tol for q in pts)]
 
 
-def shape_to_mesh_object(shape, name, tolerance=0.0005, existing=None):
-    """Tessellation vers un objet mesh Blender - shading lisse, aretes
-    vives aux frontieres. Le mesh est une VUE, jamais a editer."""
-    import bpy
-    import bmesh
-    import math
-    verts, triangles = shape.tessellate(tolerance)
-    me = bpy.data.meshes.new(name)
-    me.from_pydata([tuple(v) for v in verts], [], [tuple(t) for t in triangles])
-    me.update()
+def exact_mesh_data(shape, lin=None, ang=0.2):
+    """Per-face triangulation of a B-rep with exact surface normals.
 
-    bm = bmesh.new()
-    bm.from_mesh(me)
-    for f in bm.faces:
-        f.smooth = True
-    limit = math.radians(28)
-    for e in bm.edges:
-        if len(e.link_faces) == 2:
-            if e.calc_face_angle(0.0) > limit:
-                e.smooth = False
+    Returns (verts, tris, normals) with one vertex set per face (no welding across faces), so
+    sharp edges stay sharp and tangent faces get matching normals. lin defaults to 1/2000 of the
+    part size."""
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.BRep import BRep_Tool
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.gp import gp_Pnt, gp_Vec
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    sh = getattr(shape, "wrapped", shape)
+    if lin is None:
+        box = Bnd_Box()
+        add = getattr(BRepBndLib, "Add_s", None) or BRepBndLib.Add
+        add(sh, box)
+        lo, hi = box.CornerMin(), box.CornerMax()
+        x0, y0, z0, x1, y1, z1 = lo.X(), lo.Y(), lo.Z(), hi.X(), hi.Y(), hi.Z()
+        lin = max(max(x1 - x0, y1 - y0, z1 - z0) / 2000.0, 1e-7)
+    BRepMesh_IncrementalMesh(sh, lin, False, ang, True)
+    verts, tris, normals = [], [], []
+    ex = TopExp_Explorer(sh, TopAbs_FACE)
+    from OCP.TopoDS import TopoDS
+    to_face = getattr(TopoDS, "Face_s", None) or TopoDS.Face
+    while ex.More():
+        face = to_face(ex.Current())
+        ex.Next()
+        loc = TopLoc_Location()
+        tri = BRep_Tool.Triangulation_s(face, loc)
+        if tri is None:
+            continue
+        trsf = loc.Transformation()
+        rev = face.Orientation() == TopAbs_REVERSED
+        surf = BRepAdaptor_Surface(face) if tri.HasUVNodes() else None
+        base = len(verts)
+        for i in range(1, tri.NbNodes() + 1):
+            p = tri.Node(i).Transformed(trsf)
+            verts.append((p.X(), p.Y(), p.Z()))
+            n = None
+            if surf is not None:
+                uv = tri.UVNode(i)
+                pp, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
+                try:
+                    surf.D1(uv.X(), uv.Y(), pp, du, dv)
+                    nn = du.Crossed(dv)
+                    if nn.Magnitude() > 1e-20:
+                        nn.Normalize()
+                        n = (nn.X(), nn.Y(), nn.Z())
+                        if rev:
+                            n = (-n[0], -n[1], -n[2])
+                except Exception:
+                    n = None
+            normals.append(n)
+        ftris = []
+        for i in range(1, tri.NbTriangles() + 1):
+            a, b, c = tri.Triangle(i).Get()
+            ftris.append((base + a - 1, base + b - 1, base + c - 1))
+        # winding from the exact normals (they include the face orientation)
+        agree = 0
+        for a, b, c in ftris:
+            na = normals[a]
+            if na is None:
+                continue
+            pa, pb, pc = verts[a], verts[b], verts[c]
+            u = (pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2])
+            w = (pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2])
+            cr = (u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0])
+            d = cr[0] * na[0] + cr[1] * na[1] + cr[2] * na[2]
+            agree += 1 if d > 0 else (-1 if d < 0 else 0)
+        flip = agree < 0 if any(normals[k] is not None for k in range(base, len(verts))) else rev
+        tris += [(a, c, b) for a, b, c in ftris] if flip else ftris
+    return verts, tris, normals
+
+
+def shape_to_mesh_object(shape, name, tolerance=None, existing=None):
+    """Display mesh of a B-rep: fine per-face triangulation with the exact surface normals
+    (custom normals), so fillets and curved walls shade cleanly and sharp edges stay sharp.
+    The mesh is a VIEW of the part, never to be edited."""
+    import bpy
+    import numpy as np
+    verts, tris, normals = exact_mesh_data(shape, tolerance)
+    V = np.array(verts, float)
+    T = np.array(tris, int).reshape(-1, 3)
+    # fallback normals from the triangles (area weighted), used where the exact one is missing
+    fn = np.cross(V[T[:, 1]] - V[T[:, 0]], V[T[:, 2]] - V[T[:, 0]])
+    vn = np.zeros_like(V)
+    for k in range(3):
+        np.add.at(vn, T[:, k], fn)
+    ln = np.linalg.norm(vn, axis=1)
+    vn = vn / np.maximum(ln, 1e-30)[:, None]
+    N = []
+    for i, n in enumerate(normals):
+        if n is None or float(np.dot(n, vn[i])) < 0.2:
+            N.append(tuple(vn[i]))
         else:
-            e.smooth = False
-    bm.to_mesh(me)
-    bm.free()
+            N.append(n)
+    me = bpy.data.meshes.new(name)
+    me.from_pydata([tuple(v) for v in verts], [], [tuple(t) for t in tris])
+    me.update()
+    me.polygons.foreach_set("use_smooth", [True] * len(me.polygons))
+    try:
+        me.normals_split_custom_set_from_vertices(N)
+    except Exception:
+        pass
     me.update()
     if existing is not None:
         old = existing.data
         existing.data = me
-        bpy.data.meshes.remove(old)
+        if old.users == 0:
+            bpy.data.meshes.remove(old)
         return existing
     obj = bpy.data.objects.new(name, me)
     bpy.context.collection.objects.link(obj)
