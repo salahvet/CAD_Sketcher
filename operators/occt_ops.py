@@ -72,6 +72,52 @@ def find_sketch(context, name):
 # geometriques re-evalues a chaque recompute, comme les selecteurs FreeCAD)
 # ---------------------------------------------------------------------------
 
+def blend_edges(solid, edges, op, size):
+    """Fillet / chamfer with build123d, then straight with OCCT when build123d refuses (it rejects
+    some results OCCT builds fine, e.g. along Bézier outlines); the result is checked and fixed."""
+    import build123d as b3d
+    try:
+        return b3d.fillet(edges, radius=size) if op == "fillet" else b3d.chamfer(edges, length=size)
+    except Exception as first:
+        err = first
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.ShapeFix import ShapeFix_Shape
+    if op == "fillet":
+        from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+        from OCP.ChFi3d import ChFi3d_Rational, ChFi3d_QuasiAngular
+        makers = [lambda: BRepFilletAPI_MakeFillet(solid.wrapped, ChFi3d_Rational),
+                  lambda: BRepFilletAPI_MakeFillet(solid.wrapped, ChFi3d_QuasiAngular)]
+    else:
+        from OCP.BRepFilletAPI import BRepFilletAPI_MakeChamfer
+        makers = [lambda: BRepFilletAPI_MakeChamfer(solid.wrapped)]
+    for make in makers:
+        try:
+            mk = make()
+            for e in edges:
+                if op == "fillet":
+                    mk.Add(size, e.wrapped)
+                else:
+                    mk.Add(size, e.wrapped)
+            mk.Build()
+            if not mk.IsDone():
+                continue
+            shape = mk.Shape()
+            if not BRepCheck_Analyzer(shape).IsValid():
+                fix = ShapeFix_Shape(shape)
+                fix.Perform()
+                shape = fix.Shape()
+                if not BRepCheck_Analyzer(shape).IsValid():
+                    continue
+            out = b3d.Shape.cast(shape) if hasattr(b3d.Shape, "cast") else b3d.Solid(shape)
+            solids = out.solids() if hasattr(out, "solids") else []
+            if len(solids) != 1 or not solids[0].volume:
+                continue  # OCCT built something, but not one closed solid
+            return solids[0]
+        except Exception as e:
+            err = e
+    raise err
+
+
 def select_edges(solid, feat, base_origin, normal):
     import build123d as b3d
     n = b3d.Vector(normal)
@@ -241,14 +287,22 @@ def build_solid(context, recipe, report=None, skip=(), part_name="", _stack=()):
             if not edges:
                 continue
             try:
-                if op == "fillet":
-                    solid = b3d.fillet(edges, radius=feat["radius"])
-                else:
-                    solid = b3d.chamfer(edges, length=feat["radius"])
+                solid = blend_edges(solid, edges, op, feat["radius"])
             except Exception as e:
                 if report:
-                    report({"WARNING"},
-                           f"{op} impossible (rayon trop grand ?) : {e}")
+                    # tell what would work: try smaller sizes (not applied)
+                    ok = None
+                    for k in (0.75, 0.5, 0.3, 0.15):
+                        try:
+                            blend_edges(solid, edges, op, feat["radius"] * k)
+                            ok = feat["radius"] * k
+                            break
+                        except Exception:
+                            continue
+                    hint = (f" A {op} of {ok * 1000:.2f} mm works on these edges." if ok else
+                            " Check that the outline joins smoothly (Tangent constraint) where these edges meet.")
+                    report({"WARNING"}, f"{op.capitalize()} of {feat['radius'] * 1000:.2f} mm failed on "
+                                        f"{len(edges)} edge(s): the feature is kept but not applied.{hint}")
 
     return solid, base_origin, normal
 
