@@ -544,10 +544,37 @@ def strip_cage(solid, cdt, tol=0.0001, across=2, aspect=2.0, ds=None):
     for key, j in sm.keys.items():
         if key[0] == "b" and sm.is_corner[key[1]]:
             corner2d.add(j)
+    # an outline edge is sharp only where the cap really reaches it (no fillet / chamfer there):
+    # a point on the cap plane just inside the outline must lie on the part
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.TopAbs import TopAbs_ON, TopAbs_IN
+    from OCP.gp import gp_Pnt
+    shape = getattr(solid, "wrapped", solid)
+    clf = BRepClass3d_SolidClassifier(shape)
+    eps = min(0.0002, 0.1 * (z1 - z0))
+
+    def on_cap(u, v, z):
+        p = O + u * X + v * Y + z * N
+        clf.Perform(gp_Pnt(*p), 1e-6)
+        return clf.State() in (TopAbs_ON, TopAbs_IN)
+
     sharp = set()
+    soft = 0
     for a, b in bnd:
-        sharp.add((min(a, b), max(a, b)))
-        sharp.add((min(a, b) + nv, max(a, b) + nv))
+        pa, pb = np.array(V2[a]), np.array(V2[b])
+        d = pb - pa
+        L = np.linalg.norm(d)
+        if L == 0:
+            continue
+        inward = np.array([-d[1], d[0]]) / L  # caps are counter-clockwise: inside on the left
+        m = (pa + pb) / 2 + inward * eps
+        for z, off in ((z0, 0), (z1, nv)):
+            zz = z + (eps * 0.01 if z == z0 else -eps * 0.01)
+            if on_cap(m[0], m[1], z):
+                sharp.add((min(a, b) + off, max(a, b) + off))
+            else:
+                soft += 1
+    info["soft_outline_edges"] = soft
     bverts = {a for a, b in bnd}
     for a in bverts:
         if a in corner2d:
