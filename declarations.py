@@ -88,6 +88,7 @@ class Operators(str, Enum):
     OCCTTidyView = "view3d.slvs_occt_tidy_view"
     OCCTQuadMesh = "view3d.slvs_occt_quad_mesh"
     OCCTPatchPreview = "view3d.slvs_occt_patch_preview"
+    OCCTDrawGuides = "view3d.slvs_occt_draw_guides"
     OCCTPickEdges = "view3d.slvs_occt_pick_edges"
     Paste = "view3d.slvs_paste"
     Move = "view3d.slvs_move"

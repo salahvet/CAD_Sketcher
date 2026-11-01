@@ -498,12 +498,12 @@ class Mesher:
         N = (N.X(), N.Y(), N.Z())
         X = (X.X(), X.Y(), X.Z())
         Y = (Y.X(), Y.Y(), Y.Z())
-        n = self.guides["normal"]
-        dn = sum(n[k] * N[k] for k in range(3))
-        if abs(dn) < math.cos(math.radians(15)):
-            return []
+        normals = self.guides.get("normals") or [self.guides["normal"]] * len(self.guides["lines"])
         out = []
-        for line in self.guides["lines"]:
+        for line, n in zip(self.guides["lines"], normals):
+            dn = sum(n[k] * N[k] for k in range(3))
+            if abs(dn) < math.cos(math.radians(15)):
+                continue
             uv = []
             for p in line:
                 t = sum((O[k] - p[k]) * N[k] for k in range(3)) / dn

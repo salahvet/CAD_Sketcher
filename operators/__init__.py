@@ -32,6 +32,7 @@ modules = [
     "occt_project",
     "occt_regions",
     "occt_quad_ops",
+    "occt_guides",
     "assembly",
     "add_rectangle",
     "add_rectangle_center",

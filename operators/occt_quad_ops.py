@@ -73,8 +73,33 @@ def fit_to_surface(context, obj, bvh, iterations):
     return stats
 
 
+GUIDES_KEY = "occt_quad_guides"
+
+
+def drawn_guides(obj_part):
+    """Guides drawn on the part with OCCT Draw Guides: [{"n": normal, "pts": [...]}] (local space)."""
+    import json
+    if obj_part is None:
+        return []
+    try:
+        return json.loads(obj_part.get(GUIDES_KEY, "[]"))
+    except ValueError:
+        return []
+
+
+def set_drawn_guides(obj_part, lines):
+    import json
+    obj_part[GUIDES_KEY] = json.dumps(lines)
+
+
 def guides_for(context, obj_part, guide_sketch):
-    """Guide polylines of a sketch, in the part's local space (where the solid lives)."""
+    """Guide polylines (drawn on the part, or from a sketch), in the part's local space."""
+    if isinstance(guide_sketch, str) and guide_sketch == "DRAWN":
+        lines = drawn_guides(obj_part)
+        if not lines:
+            return None
+        return {"lines": [ln["pts"] for ln in lines], "normals": [ln["n"] for ln in lines],
+                "normal": lines[0]["n"]}
     if guide_sketch is None:
         return None
     from .. import occt_bridge
@@ -252,7 +277,8 @@ def build_quad_object(context, part_name, tolerance, max_edge, max_angle, sharp_
 
 
 def _guide_items(context):
-    items = [("NONE", "None (automatic)", "")]
+    items = [("DRAWN", "Drawn on Part", "Guides drawn on the part with Draw Guides"),
+             ("NONE", "None (automatic)", "")]
     items += [(sk.name, sk.name, "") for sk in context.scene.sketcher.entities.sketches]
     _guide_items.cache = items
     return items
@@ -334,6 +360,8 @@ class View3D_OT_slvs_occt_quad_mesh(Operator):
     def _guide_sketch(self, context):
         if self.method != "PATCHES" or self.guides in ("", "NONE"):
             return None
+        if self.guides == "DRAWN":
+            return "DRAWN"
         return next((sk for sk in context.scene.sketcher.entities.sketches if sk.name == self.guides), None)
 
     def execute(self, context: Context):
@@ -403,7 +431,9 @@ class View3D_OT_slvs_occt_patch_preview(Operator):
         try:
             solid = part_solid(context, self.part, self.report)
             sk = None
-            if self.guides not in ("", "NONE"):
+            if self.guides == "DRAWN":
+                sk = "DRAWN"
+            elif self.guides not in ("", "NONE"):
                 sk = next((x for x in context.scene.sketcher.entities.sketches if x.name == self.guides), None)
             guides = guides_for(context, context.scene.objects.get(self.part), sk)
             verts, faces, sharp, info = occt_quad2.quad_mesh(solid, self.tolerance, self.max_edge, self.max_angle,

@@ -106,6 +106,10 @@ class VIEW3D_PT_sketcher_part_tree(VIEW3D_PT_sketcher_base):
         row.operator(declarations.Operators.OCCTRecompute, icon="FILE_REFRESH")
         row.operator(declarations.Operators.OCCTTidyView, icon="HIDE_ON")
         row = layout.row(align=True)
+        row.operator(declarations.Operators.OCCTDrawGuides, icon="GREASEPENCIL")
+        op = row.operator(declarations.Operators.OCCTDrawGuides, text="", icon="TRASH")
+        op.clear = True
+        row = layout.row(align=True)
         row.operator(declarations.Operators.OCCTPatchPreview, icon="MOD_LATTICE")
         op = row.operator(declarations.Operators.OCCTPatchPreview, text="", icon="X")
         op.clear = True
