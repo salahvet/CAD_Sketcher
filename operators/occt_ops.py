@@ -473,6 +473,14 @@ def recompute_part(context, part_name, report=None, cascade=True):
     existing = context.scene.objects.get(part_name)
     obj = occt_bridge.shape_to_mesh_object(solid, part_name, existing=existing)
     obj["occt_part"] = True
+    # mesh-modifier features (legacy Pad / Pocket / Fillet) do not belong on an OCCT part:
+    # they cut / bevel the display mesh a second time and spoil it
+    legacy = [m.name for m in obj.modifiers if m.name.startswith("SLVS_")]
+    for name in legacy:
+        obj.modifiers.remove(obj.modifiers[name])
+    if legacy and report:
+        report({"WARNING"}, f"{part_name}: removed the mesh modifiers {', '.join(legacy)} "
+                            "(mesh features); OCCT parts are edited with the OCCT features")
 
     # objet des aretes exactes du B-rep
     edges_name = part_name + "_Edges"

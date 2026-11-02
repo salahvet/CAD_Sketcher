@@ -35,6 +35,8 @@ def mesh_objects_enum(self, context):
             continue
         if o.name.startswith("SLVS_cutter"):
             continue
+        if o.get("occt_part") or o.get("occt_quad_of"):
+            continue  # OCCT parts are edited with the OCCT features, not with mesh modifiers
         items.append((o.name, o.name, ""))
     return items or [("NONE", "<no mesh object>", "")]
 
@@ -188,7 +190,7 @@ class View3D_OT_slvs_feature_fillet(Operator):
     def invoke(self, context, event):
         # cible par defaut : l'objet actif s'il est un mesh
         ob = context.active_object
-        if ob and ob.type == "MESH" and not ob.name.startswith("SLVS_cutter"):
+        if ob and ob.type == "MESH" and not ob.name.startswith("SLVS_cutter") and not ob.get("occt_part"):
             self.target = ob.name
         return context.window_manager.invoke_props_dialog(self, width=280)
 

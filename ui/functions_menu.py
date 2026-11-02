@@ -32,6 +32,7 @@ class VIEW3D_MT_sketcher_functions(Menu):
         layout.operator(Operators.AssemblyPivot, icon="CON_PIVOT")
         layout.operator(Operators.CheckInterference, icon="MOD_PHYSICS")
         layout.separator()
+        layout.label(text="Mesh Features (not for OCCT parts)")
         layout.operator(Operators.FeaturePadSolid, icon="MESH_CUBE")
         layout.operator(Operators.FeatureFilletEdges, icon="MOD_BEVEL")
         layout.separator()
