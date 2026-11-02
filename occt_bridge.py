@@ -177,7 +177,7 @@ def region_faces(context, sketch, probes, tol=1e-7):
     return [f for f in sketch_regions(context, sketch) if any(f.distance_to(q) <= tol for q in pts)]
 
 
-def exact_mesh_data(shape, lin=None, ang=0.1):
+def exact_mesh_data(shape, lin=None, ang=0.06):
     """Per-face triangulation of a B-rep with exact surface normals.
 
     Returns (verts, tris, normals) with one vertex set per face (no welding across faces), so
@@ -255,6 +255,96 @@ def exact_mesh_data(shape, lin=None, ang=0.1):
     return verts, tris, normals
 
 
+def smooth_edge_flags(shape, deg=3.0):
+    """For each edge of shape.edges(): True when it is not a visible crease — the two faces meet
+    tangentially (G1, e.g. the seams between the B-spline patches of a fillet, or fillet/wall
+    junctions) or it is the seam of a closed surface. Such edges are not drawn as outlines."""
+    import math
+    from OCP.TopoDS import TopoDS
+    from OCP.TopAbs import TopAbs_REVERSED
+    from OCP.BRepAdaptor import BRepAdaptor_Curve2d, BRepAdaptor_Surface
+    from OCP.gp import gp_Pnt, gp_Vec
+    _F = getattr(TopoDS, "Face_s", None) or TopoDS.Face
+    _E = getattr(TopoDS, "Edge_s", None) or TopoDS.Edge
+    adj = {}
+    for f in shape.faces():
+        F = _F(f.wrapped)
+        for e in f.edges():
+            lst = adj.setdefault(e, [])
+            if not any(F.IsSame(g) for g in lst):
+                lst.append(F)
+    cosmax = math.cos(math.radians(deg))
+    out = []
+    for e in shape.edges():
+        faces = adj.get(e, [])
+        if len(faces) == 1:
+            out.append(True)
+            continue
+        if len(faces) != 2:
+            out.append(False)
+            continue
+        E = _E(e.wrapped)
+        ok = True
+        try:
+            for t in (0.15, 0.5, 0.85):
+                ns = []
+                for F in faces:
+                    c2 = BRepAdaptor_Curve2d(E, F)
+                    p = c2.Value(c2.FirstParameter() + t * (c2.LastParameter() - c2.FirstParameter()))
+                    pp, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
+                    BRepAdaptor_Surface(F).D1(p.X(), p.Y(), pp, du, dv)
+                    n = du.Crossed(dv)
+                    if n.Magnitude() < 1e-20:
+                        raise ValueError
+                    n.Normalize()
+                    if F.Orientation() == TopAbs_REVERSED:
+                        n.Reverse()
+                    ns.append(n)
+                if ns[0].Dot(ns[1]) < cosmax:
+                    ok = False
+                    break
+        except Exception:
+            ok = False
+        out.append(ok)
+    return out
+
+
+def _weld_smooth(V, T, N, deg=4.0):
+    """Merge the coincident vertices of neighbouring faces whose normals agree (tangent seams):
+    the display mesh becomes one continuous surface across fillet patches, so the shading has no
+    break there. Creases (normals apart) keep separate vertices and stay sharp."""
+    import numpy as np
+    size = float(np.max(V.max(0) - V.min(0))) if len(V) else 1.0
+    q = np.round(V / max(size * 1e-6, 1e-12)).astype(np.int64)
+    _, key = np.unique(q, axis=0, return_inverse=True)
+    key = key.reshape(-1)
+    cosmax = np.cos(np.radians(deg))
+    rep = np.arange(len(V))
+    order = np.argsort(key, kind="stable")
+    ks = key[order]
+    starts = np.flatnonzero(np.r_[True, ks[1:] != ks[:-1]])
+    ends = np.r_[starts[1:], len(ks)]
+    for a, b in zip(starts, ends):
+        if b - a < 2:
+            continue
+        grp = order[a:b]
+        heads = []
+        for i in grp:
+            for h in heads:
+                if float(np.dot(N[i], N[h])) >= cosmax:
+                    rep[i] = h
+                    break
+            else:
+                heads.append(i)
+    used, new_idx = np.unique(rep, return_inverse=True)
+    T2 = new_idx[T]
+    T2 = T2[(T2[:, 0] != T2[:, 1]) & (T2[:, 1] != T2[:, 2]) & (T2[:, 0] != T2[:, 2])]
+    N2 = np.zeros((len(used), 3))
+    np.add.at(N2, new_idx, N)
+    N2 /= np.maximum(np.linalg.norm(N2, axis=1), 1e-30)[:, None]
+    return V[used], T2, [tuple(n) for n in N2]
+
+
 def shape_to_mesh_object(shape, name, tolerance=None, existing=None):
     """Display mesh of a B-rep: fine per-face triangulation with the exact surface normals
     (custom normals), so fillets and curved walls shade cleanly and sharp edges stay sharp.
@@ -277,6 +367,7 @@ def shape_to_mesh_object(shape, name, tolerance=None, existing=None):
             N.append(tuple(vn[i]))
         else:
             N.append(n)
+    verts, tris, N = _weld_smooth(V, T, np.array(N, float))
     me = bpy.data.meshes.new(name)
     me.from_pydata([tuple(v) for v in verts], [], [tuple(t) for t in tris])
     me.update()
@@ -303,7 +394,13 @@ def shape_edges_object(shape, name, existing=None, samples=24):
     import bpy
     cu = bpy.data.curves.new(name, type="CURVE")
     cu.dimensions = "3D"
-    for edge in shape.edges():
+    try:
+        smooth = smooth_edge_flags(shape)
+    except Exception:
+        smooth = []
+    for k, edge in enumerate(shape.edges()):
+        if k < len(smooth) and smooth[k]:
+            continue  # tangent seam (fillet patches, fillet/wall junction): no outline
         try:
             gtype = edge.geom_type
             gt = str(gtype() if callable(gtype) else gtype)

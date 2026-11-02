@@ -1424,6 +1424,10 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
         self.batches = []
         shader = gpu.shader.from_builtin("UNIFORM_COLOR")
         self.shader = shader
+        try:
+            self.smooth = occt_bridge.smooth_edge_flags(solid)
+        except Exception:
+            self.smooth = []
         for edge in solid.edges():
             pts = []
             gt = str(edge.geom_type).upper().split(".")[-1]
@@ -1545,6 +1549,9 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
             elif i == self.hover:
                 gpu.state.line_width_set(4.0)
                 color = (1.0, 0.85, 0.1, 1.0)
+            elif i < len(self.smooth) and self.smooth[i]:
+                gpu.state.line_width_set(1.0)
+                color = (0.6, 0.75, 1.0, 0.18)  # tangent seam: faint, still pickable
             else:
                 gpu.state.line_width_set(1.5)
                 color = (0.9, 0.9, 0.9, 0.55)
