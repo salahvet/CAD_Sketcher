@@ -72,32 +72,54 @@ def find_sketch(context, name):
 # geometriques re-evalues a chaque recompute, comme les selecteurs FreeCAD)
 # ---------------------------------------------------------------------------
 
+def _blend_tol(solid):
+    """3D tolerance for the fillet approximation. OCCT's defaults (1e-4 ...) are meant for parts
+    modelled in millimetres; our parts are in metres, so a default fillet is approximated to
+    0.1 mm: along an ellipse or a Bezier it is cut into many patches whose corner vertices merge
+    (1 mm vertex tolerance) -> wrong triangles and dark specks, and fillets that fail."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+    box = Bnd_Box()
+    (getattr(BRepBndLib, "Add_s", None) or BRepBndLib.Add)(solid.wrapped, box)
+    lo, hi = box.CornerMin(), box.CornerMax()
+    diag = ((hi.X() - lo.X()) ** 2 + (hi.Y() - lo.Y()) ** 2 + (hi.Z() - lo.Z()) ** 2) ** 0.5
+    return min(max(diag * 1e-6, 1e-8), 1e-5)
+
+
 def blend_edges(solid, edges, op, size):
-    """Fillet / chamfer with build123d, then straight with OCCT when build123d refuses (it rejects
-    some results OCCT builds fine, e.g. along Bézier outlines); the result is checked and fixed."""
+    """Fillet / chamfer. Fillets are built straight with OCCT at a tolerance scaled to the part
+    (clean single surfaces, no merged vertices), then with build123d, then with OCCT defaults.
+    The result must be one valid closed solid."""
     import build123d as b3d
-    try:
-        return b3d.fillet(edges, radius=size) if op == "fillet" else b3d.chamfer(edges, length=size)
-    except Exception as first:
-        err = first
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.ShapeFix import ShapeFix_Shape
+    err = None
+    attempts = []
     if op == "fillet":
         from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
         from OCP.ChFi3d import ChFi3d_Rational, ChFi3d_QuasiAngular
-        makers = [lambda: BRepFilletAPI_MakeFillet(solid.wrapped, ChFi3d_Rational),
-                  lambda: BRepFilletAPI_MakeFillet(solid.wrapped, ChFi3d_QuasiAngular)]
+        tol = _blend_tol(solid)
+
+        def fillet_maker(kind, scaled):
+            def make():
+                mk = BRepFilletAPI_MakeFillet(solid.wrapped, kind)
+                if scaled:
+                    # Tang, Tesp, T2d, TApp3d, TolApp2d, Fleche
+                    mk.SetParams(1e-2, tol, tol / 10.0, tol, tol / 10.0, tol * 10.0)
+                return mk
+            return make
+        attempts = [fillet_maker(ChFi3d_Rational, True), fillet_maker(ChFi3d_QuasiAngular, True),
+                    "b3d", fillet_maker(ChFi3d_Rational, False)]
     else:
         from OCP.BRepFilletAPI import BRepFilletAPI_MakeChamfer
-        makers = [lambda: BRepFilletAPI_MakeChamfer(solid.wrapped)]
-    for make in makers:
+        attempts = ["b3d", lambda: BRepFilletAPI_MakeChamfer(solid.wrapped)]
+    for make in attempts:
         try:
+            if make == "b3d":
+                return b3d.fillet(edges, radius=size) if op == "fillet" else b3d.chamfer(edges, length=size)
             mk = make()
             for e in edges:
-                if op == "fillet":
-                    mk.Add(size, e.wrapped)
-                else:
-                    mk.Add(size, e.wrapped)
+                mk.Add(size, e.wrapped)
             mk.Build()
             if not mk.IsDone():
                 continue
@@ -115,7 +137,7 @@ def blend_edges(solid, edges, op, size):
             return solids[0]
         except Exception as e:
             err = e
-    raise err
+    raise err or ValueError(f"{op} of {size * 1000:.3g} mm failed")
 
 
 def select_edges(solid, feat, base_origin, normal):
@@ -465,7 +487,12 @@ def recompute_part(context, part_name, report=None, cascade=True):
     if not recipe:
         return None
 
+    occt_bridge.SMOOTH_REPORT.clear()
     solid, _o, _n = build_solid(context, recipe, report, part_name=part_name)
+    if occt_bridge.SMOOTH_REPORT and report:
+        angs = sorted({round(a, 1) for _p, a in occt_bridge.SMOOTH_REPORT}, reverse=True)
+        report({"INFO"}, f"{part_name}: {len(occt_bridge.SMOOTH_REPORT)} almost-tangent sketch joint(s) "
+                         f"made tangent ({', '.join(f'{a}°' for a in angs[:4])}): no crease on the walls")
     if solid is None:
         return None
 

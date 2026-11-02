@@ -22,6 +22,100 @@ def _ensure_build123d():
     return build123d
 
 
+SMOOTH_KINK_DEG = 15.0  # joints turning less than this are made exactly tangent (0 = off)
+SMOOTH_REPORT = []      # filled with (point, angle) of the joints smoothed by the last conversion
+
+
+def _v(a, b):
+    return (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+
+
+def _unit(v):
+    n = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+    return (v[0] / n, v[1] / n, v[2] / n) if n > 1e-15 else None
+
+
+def _seg_tangent(seg, at_end):
+    kind, d = seg
+    if kind == "L":
+        return _unit(_v(d[0], d[1]))
+    if kind == "B":
+        if at_end:
+            for k in (2, 1, 0):
+                u = _unit(_v(d[k], d[3]))
+                if u:
+                    return u
+        else:
+            for k in (1, 2, 3):
+                u = _unit(_v(d[0], d[k]))
+                if u:
+                    return u
+        return None
+    t = d.tangent_at(1.0 if at_end else 0.0)
+    return _unit((t.X, t.Y, t.Z))
+
+
+def _set_handle(seg, at_end, direction):
+    """Turn a Bezier handle at one end so the curve leaves along `direction`, keeping its length."""
+    d = seg[1]
+    if at_end:
+        L = math.dist(d[2], d[3])
+        d[2] = tuple(d[3][i] - direction[i] * L for i in range(3))
+    else:
+        L = math.dist(d[0], d[1])
+        d[1] = tuple(d[0][i] + direction[i] * L for i in range(3))
+
+
+def smooth_joints(segs, kink=None, report=None):
+    """A profile drawn by hand often has joints that are ALMOST tangent (a few degrees off).
+    Extruded, each one is a crease along the whole wall, and a fillet along it gets a visible
+    dent (or fails). Joints turning less than `kink` degrees are made exactly tangent by turning
+    the Bezier handle(s) at the joint (both to the bisector, or the one Bezier to the line/arc
+    direction). Real corners are kept. Lines and arcs are never moved."""
+    kink = SMOOTH_KINK_DEG if kink is None else kink
+    n = len(segs)
+    if kink <= 0 or n < 2:
+        return
+    closed = math.dist(_seg_end(segs[-1]), _seg_start(segs[0])) < 1e-9
+    for i in range(n if closed else n - 1):
+        a, b = segs[i], segs[(i + 1) % n]
+        ta, tb = _seg_tangent(a, True), _seg_tangent(b, False)
+        if ta is None or tb is None:
+            continue
+        cosang = max(-1.0, min(1.0, ta[0] * tb[0] + ta[1] * tb[1] + ta[2] * tb[2]))
+        ang = math.degrees(math.acos(cosang))
+        if ang < 0.01 or ang >= kink:
+            continue
+        if a[0] == "B" and b[0] == "B":
+            d = _unit(tuple(ta[k] + tb[k] for k in range(3)))
+            _set_handle(a, True, d)
+            _set_handle(b, False, d)
+        elif a[0] == "B":
+            _set_handle(a, True, tb)
+        elif b[0] == "B":
+            _set_handle(b, False, ta)
+        else:
+            continue
+        if report is not None:
+            report.append((_seg_start(b), ang))
+
+
+def _seg_start(seg):
+    kind, d = seg
+    if kind == "A":
+        p = d.position_at(0.0)
+        return (p.X, p.Y, p.Z)
+    return d[0]
+
+
+def _seg_end(seg):
+    kind, d = seg
+    if kind == "A":
+        p = d.position_at(1.0)
+        return (p.X, p.Y, p.Z)
+    return d[-1]
+
+
 def sketch_to_wires(context, sketch):
     """Retourne (wires, plane_normal) : la liste des contours fermes du
     sketch en Wires OCCT exacts, dans l'espace monde."""
@@ -54,21 +148,30 @@ def sketch_to_wires(context, sketch):
     walker = EntityWalker(context.scene, sketch)
     wires = []
     for entities, directions in walker.paths:
-        edges = []
+        segs = []  # [kind, data]: "L" [a, b] | "A" edge | "B" [p1, c1, c2, p2]
         for e, inv in zip(entities, directions):
             t = type(e).__name__
             if t == "SlvsLine2D":
                 a, b = P(e.p1.co), P(e.p2.co)
                 if inv:
                     a, b = b, a
-                edges.append(b3d.Edge.make_line(a, b))
+                segs.append(["L", [a, b]])
             elif t == "SlvsArc":
-                edges.append(arc_edge(e, inv))
+                segs.append(["A", arc_edge(e, inv)])
             elif t == "SlvsBezier":
                 pts = [P(e.p1.co), P(e.ctrl1.co), P(e.ctrl2.co), P(e.p2.co)]
                 if inv:
                     pts.reverse()
-                edges.append(b3d.Edge.make_bezier(*pts))
+                segs.append(["B", pts])
+        smooth_joints(segs, report=SMOOTH_REPORT)
+        edges = []
+        for kind, d in segs:
+            if kind == "L":
+                edges.append(b3d.Edge.make_line(*d))
+            elif kind == "A":
+                edges.append(d)
+            else:
+                edges.append(b3d.Edge.make_bezier(*d))
         if edges:
             wires.append(b3d.Wire(edges))
 
@@ -201,6 +304,9 @@ def exact_mesh_data(shape, lin=None, ang=0.06):
         x0, y0, z0, x1, y1, z1 = lo.X(), lo.Y(), lo.Z(), hi.X(), hi.Y(), hi.Z()
         lin = max(max(x1 - x0, y1 - y0, z1 - z0) / 2000.0, 1e-7)
     BRepMesh_IncrementalMesh(sh, lin, False, ang, True)
+    from OCP.ShapeAnalysis import ShapeAnalysis_Surface
+    check = max(lin * 0.5, 1e-8)
+    fixed_uv = [0]
     verts, tris, normals = [], [], []
     ex = TopExp_Explorer(sh, TopAbs_FACE)
     from OCP.TopoDS import TopoDS
@@ -215,6 +321,7 @@ def exact_mesh_data(shape, lin=None, ang=0.06):
         trsf = loc.Transformation()
         rev = face.Orientation() == TopAbs_REVERSED
         surf = BRepAdaptor_Surface(face) if tri.HasUVNodes() else None
+        sas = None
         base = len(verts)
         for i in range(1, tri.NbNodes() + 1):
             p = tri.Node(i).Transformed(trsf)
@@ -224,7 +331,18 @@ def exact_mesh_data(shape, lin=None, ang=0.06):
                 uv = tri.UVNode(i)
                 pp, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
                 try:
-                    surf.D1(uv.X(), uv.Y(), pp, du, dv)
+                    u, v = uv.X(), uv.Y()
+                    surf.D1(u, v, pp, du, dv)
+                    if pp.Distance(p) > check:
+                        # BRepMesh sometimes stores a wrong UV for a node (patch corners of a
+                        # fillet): the normal would be taken elsewhere on the surface -> dark
+                        # speck. Re-project the node to get its true UV.
+                        if sas is None:
+                            sas = ShapeAnalysis_Surface(BRep_Tool.Surface_s(face))
+                        uv2 = sas.ValueOfUV(p, check)  # Surface_s(face) includes the location, like p
+                        u, v = uv2.X(), uv2.Y()
+                        surf.D1(u, v, pp, du, dv)
+                        fixed_uv[0] += 1
                     nn = du.Crossed(dv)
                     if nn.Magnitude() > 1e-20:
                         nn.Normalize()
