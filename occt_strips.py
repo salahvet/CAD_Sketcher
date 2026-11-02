@@ -80,6 +80,7 @@ class StripMesher:
         self.T = [tuple(t) for t in tris if _pip(tuple(self.P[list(t)].mean(0)), loops_xy)]
         self.bnd = {(min(a, b), max(a, b)) for a, b in segs}
         self.verts, self.quads, self.keys = [], [], {}
+        self.patch_of, self.cur_patch = [], -1  # one id per strip / junction / end (preview colours)
         self.info = {"junctions": 0, "strips": 0, "ends": 0, "warnings": []}
 
     # ---- vertices ------------------------------------------------------------------------------
@@ -109,6 +110,7 @@ class StripMesher:
     def quad(self, q):
         if len(set(q)) == 4:
             self.quads.append(list(q))
+            self.patch_of.append(self.cur_patch)
 
     # ---- skeleton ------------------------------------------------------------------------------
     def build(self):
@@ -221,6 +223,7 @@ class StripMesher:
         if len(ch) < 2:
             return
         self.info["strips"] += 1
+        self.cur_patch += 1
         # orient every chord the same way: start = the endpoint shared with the previous chord's
         # side. Consecutive chords share exactly one endpoint (sleeve triangle).
         sides = []  # (left index, right index) per chord
@@ -335,6 +338,7 @@ class StripMesher:
     # ---- junctions and ends -----------------------------------------------------------------------
     def junction(self, ti):
         self.info["junctions"] += 1
+        self.cur_patch += 1
         t = self.T[ti]
         P = self.P
         n = self.n
@@ -380,6 +384,7 @@ class StripMesher:
     def end(self, node, e, b):
         """Close a strip: the region beyond chord e (junction pruned or end triangle)."""
         self.info["ends"] += 1
+        self.cur_patch += 1
         P = self.P
         n = self.n
         a, c = e
@@ -537,8 +542,15 @@ def strip_cage(solid, cdt, tol=0.0001, across=2, aspect=2.0, ds=None):
             a, b = q[k], q[(k + 1) % 4]
             ec[(a, b)] = ec.get((a, b), 0) + 1
     bnd = [(a, b) for (a, b) in ec if (b, a) not in ec]
+    pq = list(sm.patch_of) if len(sm.patch_of) == len(Q2) else [0] * len(Q2)
+    owner = {}
+    for qi, q in enumerate(Q2):
+        for k in range(4):
+            owner[(q[k], q[(k + 1) % 4])] = pq[qi]
+    patch_of = pq + pq
     for a, b in bnd:
         faces.append([b, a, a + nv, b + nv])
+        patch_of.append(owner.get((a, b), 0))
     # sharp edges: both outline loops, and the vertical edges on outline corners
     corner2d = set()
     for key, j in sm.keys.items():
@@ -580,4 +592,5 @@ def strip_cage(solid, cdt, tol=0.0001, across=2, aspect=2.0, ds=None):
         if a in corner2d:
             sharp.add((a, a + nv))
     info["quads_per_cap"] = len(Q2)
+    info["patch_of"] = patch_of
     return verts, faces, sharp, info

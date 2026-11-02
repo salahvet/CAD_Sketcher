@@ -453,6 +453,11 @@ class View3D_OT_slvs_occt_patch_preview(Operator):
     tolerance: FloatProperty(name="Tolerance", default=0.0001, min=1e-6, soft_max=0.001, unit="LENGTH", precision=4)
     max_edge: FloatProperty(name="Max Edge Length", default=0.0, min=0.0, soft_max=0.05, unit="LENGTH")
     max_angle: FloatProperty(name="Max Angle", default=45.0, min=5.0, max=90.0)
+    method: EnumProperty(name="Layout", default="STRIPS", items=(
+        ("STRIPS", "Strips", "The layout OCCT Quad Mesh uses by default: strips along the outline"),
+        ("PATCHES", "Patches", "Face patches split by the guides")))
+    across: IntProperty(name="Quads Across", default=2, min=1, max=8)
+    aspect: FloatProperty(name="Max Aspect", default=2.0, min=1.0, max=8.0)
     clear: BoolProperty(name="Clear", default=False, options={"HIDDEN"})
 
     @classmethod
@@ -485,9 +490,14 @@ class View3D_OT_slvs_occt_patch_preview(Operator):
                 sk = "DRAWN"
             elif self.guides not in ("", "NONE"):
                 sk = next((x for x in context.scene.sketcher.entities.sketches if x.name == self.guides), None)
-            guides = guides_for(context, context.scene.objects.get(self.part), sk)
-            verts, faces, sharp, info = occt_quad2.quad_mesh(solid, self.tolerance, self.max_edge, self.max_angle,
-                                                             40.0, occt_quad.blender_cdt, guides=guides)
+            if self.method == "STRIPS":
+                verts, faces, sharp, info = occt_strips.strip_cage(solid, occt_quad.blender_cdt, self.tolerance,
+                                                                   self.across, self.aspect)
+            else:
+                guides = guides_for(context, context.scene.objects.get(self.part), sk)
+                verts, faces, sharp, info = occt_quad2.quad_mesh(solid, self.tolerance, self.max_edge,
+                                                                 self.max_angle, 40.0, occt_quad.blender_cdt,
+                                                                 guides=guides)
         except Exception as e:
             self.report({"ERROR"}, f"Preview failed: {e}")
             return {"CANCELLED"}
