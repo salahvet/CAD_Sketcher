@@ -177,7 +177,7 @@ def region_faces(context, sketch, probes, tol=1e-7):
     return [f for f in sketch_regions(context, sketch) if any(f.distance_to(q) <= tol for q in pts)]
 
 
-def exact_mesh_data(shape, lin=None, ang=0.2):
+def exact_mesh_data(shape, lin=None, ang=0.1):
     """Per-face triangulation of a B-rep with exact surface normals.
 
     Returns (verts, tris, normals) with one vertex set per face (no welding across faces), so
@@ -309,7 +309,9 @@ def shape_edges_object(shape, name, existing=None, samples=24):
             gt = str(gtype() if callable(gtype) else gtype)
         except Exception:
             gt = ""
-        n = 2 if "LINE" in gt.upper() else samples
+        kind = gt.upper().split(".")[-1]
+        # exact type test: "BSPLINE" contains "LINE" and was drawn as a straight segment
+        n = 2 if kind == "LINE" else max(samples, 64)
         pts = []
         for i in range(n):
             t = i / (n - 1)

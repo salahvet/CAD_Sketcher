@@ -1426,7 +1426,8 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
         self.shader = shader
         for edge in solid.edges():
             pts = []
-            n_s = 2 if "LINE" in str(edge.geom_type) else 48
+            gt = str(edge.geom_type).upper().split(".")[-1]
+            n_s = 2 if gt == "LINE" else 64  # (BSPLINE contains "LINE": compare exactly)
             for i in range(n_s):
                 t = i / (n_s - 1)
                 v = edge @ t
