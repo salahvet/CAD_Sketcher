@@ -86,6 +86,21 @@ def _blend_tol(solid):
     return min(max(diag * 1e-6, 1e-8), 1e-5)
 
 
+def _solids_of(shape):
+    """build123d Solids of an OCCT shape (Shape.cast returns None on some build123d versions)."""
+    import build123d as b3d
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopAbs import TopAbs_SOLID
+    from OCP.TopoDS import TopoDS
+    to_solid = getattr(TopoDS, "Solid_s", None) or TopoDS.Solid
+    out = []
+    ex = TopExp_Explorer(shape, TopAbs_SOLID)
+    while ex.More():
+        out.append(b3d.Solid(to_solid(ex.Current())))
+        ex.Next()
+    return out
+
+
 def blend_edges(solid, edges, op, size):
     """Fillet / chamfer. Fillets are built straight with OCCT at a tolerance scaled to the part
     (clean single surfaces, no merged vertices), then with build123d, then with OCCT defaults.
@@ -130,8 +145,7 @@ def blend_edges(solid, edges, op, size):
                 shape = fix.Shape()
                 if not BRepCheck_Analyzer(shape).IsValid():
                     continue
-            out = b3d.Shape.cast(shape) if hasattr(b3d.Shape, "cast") else b3d.Solid(shape)
-            solids = out.solids() if hasattr(out, "solids") else []
+            solids = _solids_of(shape)
             if len(solids) != 1 or not solids[0].volume:
                 continue  # OCCT built something, but not one closed solid
             return solids[0]
