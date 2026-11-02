@@ -63,7 +63,7 @@ class View3D_OT_slvs_occt_draw_guides(Operator):
                 self.status += " — a guide does not reach an edge"
         except Exception as e:
             self.status = f"Preview failed: {e}"
-        context.area.header_text_set(HELP + "   ▸ " + self.status)
+        self._area.header_text_set(HELP + "   ▸ " + self.status)
 
     def _ray(self, context, event):
         region, rv3d = context.region, context.region_data
@@ -144,6 +144,7 @@ class View3D_OT_slvs_occt_draw_guides(Operator):
 
     # ---- operator -------------------------------------------------------------------------------
     def invoke(self, context, event):
+        self._area = context.area  # kept: context.area is None when the workspace changes
         self.part = _part_of(context)
         self.obj = context.scene.objects.get(self.part)
         if self.obj is None or self.obj.type != "MESH":
@@ -152,7 +153,7 @@ class View3D_OT_slvs_occt_draw_guides(Operator):
         if self.clear:
             occt_quad_ops.set_drawn_guides(self.obj, [])
             occt_quad_ops.clear_preview()
-            context.area.tag_redraw()
+            self._area.tag_redraw()
             self.report({"INFO"}, "Guides cleared")
             return {"FINISHED"}
         self.M = self.obj.matrix_world.copy()
@@ -169,11 +170,11 @@ class View3D_OT_slvs_occt_draw_guides(Operator):
 
     def _finish(self, context):
         bpy.types.SpaceView3D.draw_handler_remove(self._handle, "WINDOW")
-        context.area.header_text_set(None)
-        context.area.tag_redraw()
+        self._area.header_text_set(None)
+        self._area.tag_redraw()
 
     def modal(self, context, event):
-        context.area.tag_redraw()
+        self._area.tag_redraw()
         if event.type == "MOUSEMOVE":
             p, n = self._pick(context, event)
             self.hover = p

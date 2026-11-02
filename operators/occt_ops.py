@@ -1404,6 +1404,7 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
         return True
 
     def invoke(self, context, event):
+        self._area = context.area  # kept: context.area is None when the workspace changes
         part = self._part(context)
         ob = context.scene.objects.get(part)
         self.M = ob.matrix_world.copy() if ob is not None else None
@@ -1452,7 +1453,7 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
         self._handle = bpy.types.SpaceView3D.draw_handler_add(
             self._draw, (context,), "WINDOW", "POST_VIEW")
         context.window_manager.modal_handler_add(self)
-        context.area.header_text_set(
+        self._area.header_text_set(
             "Pick Edges: click an edge to select / unselect | Enter: fillet the picked edges | Esc: cancel")
         return {"RUNNING_MODAL"}
 
@@ -1460,11 +1461,11 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
         if self._handle:
             bpy.types.SpaceView3D.draw_handler_remove(self._handle, "WINDOW")
             self._handle = None
-        context.area.header_text_set(None)
-        context.area.tag_redraw()
+        self._area.header_text_set(None)
+        self._area.tag_redraw()
 
     def modal(self, context, event):
-        context.area.tag_redraw()
+        self._area.tag_redraw()
 
         # la piece a ete recalculee sous nos pieds -> sortir proprement
         if _solid_cache.get(self.part) is not self._solid_ref:
@@ -1510,7 +1511,7 @@ class View3D_OT_slvs_occt_pick_edges(Operator):
                 self.picked.add(self.hover)
             # saved at once: OCCT Fillet sees the picks even if opened without Enter
             context.scene[PICKS_KEY] = json.dumps([list(self.centers[i]) for i in sorted(self.picked)])
-            context.area.header_text_set(
+            self._area.header_text_set(
                 f"Pick Edges: {len(self.picked)} edge(s) picked | click to add / remove | "
                 "Enter: fillet them | Esc: done")
             return {"RUNNING_MODAL"}
