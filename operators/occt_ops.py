@@ -154,6 +154,79 @@ def blend_edges(solid, edges, op, size):
     raise err or ValueError(f"{op} of {size * 1000:.3g} mm failed")
 
 
+def _fillet_law(solid, edges, law_of, tol):
+    """Fillet with a radius law on every edge of every contour (OCCT evolutive fillet).
+    law_of(ic, j, edge) -> [(u in 0..1 along that edge, radius), ...]. Returns the solid or None."""
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+    from OCP.ChFi3d import ChFi3d_Rational
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    from OCP.collections import Array1_gp_Pnt2d
+    from OCP.gp import gp_Pnt2d
+    try:
+        mk = BRepFilletAPI_MakeFillet(solid.wrapped, ChFi3d_Rational)
+        mk.SetParams(1e-2, tol, tol / 10.0, tol, tol / 10.0, tol * 10.0)
+        for e in edges:
+            mk.Add(1e-4, e.wrapped)
+        for ic in range(1, mk.NbContours() + 1):
+            for j in range(1, mk.NbEdges(ic) + 1):
+                law = law_of(ic, j, mk.Edge(ic, j))
+                arr = Array1_gp_Pnt2d(1, len(law))
+                for i, (u, r) in enumerate(law):
+                    arr.SetValue(i + 1, gp_Pnt2d(u, r))
+                mk.SetRadius(arr, ic, j)
+        mk.Build()
+        if not mk.IsDone():
+            return None
+        shape = mk.Shape()
+        if not BRepCheck_Analyzer(shape).IsValid():
+            return None
+        solids = _solids_of(shape)
+        if len(solids) != 1 or not solids[0].volume or solids[0].volume >= solid.volume:
+            return None
+        return solids[0]
+    except Exception:
+        return None
+
+
+def adapt_fillet(solid, edges, R):
+    """Flexible fillet, used when the radius does not fit everywhere (thin wall, tight corner):
+    the edges are filleted contour by contour (a contour = a chain of tangent edges); each
+    contour keeps R when it fits, else gets the largest radius that fits there. Returns
+    (solid, [(contour length, radius)]) or (None, None)."""
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+    import build123d as b3d
+    tol = _blend_tol(solid)
+    mk = BRepFilletAPI_MakeFillet(solid.wrapped)
+    for e in edges:
+        mk.Add(1e-4, e.wrapped)
+    groups = []
+    for ic in range(1, mk.NbContours() + 1):
+        ces = [mk.Edge(ic, j) for j in range(1, mk.NbEdges(ic) + 1)]
+        grp = [e for e in edges if any(e.wrapped.IsSame(c) for c in ces)]
+        if grp:
+            groups.append((grp, sum(b3d.Edge(c).length for c in ces)))
+    cur, used = solid, []
+    for grp, length in groups:
+        # the edges are rebuilt by each fillet: find them again on the current solid
+        cg = [min(cur.edges(), key=lambda x: (x.center() - e.center()).length) for e in grp]
+        best, lo, hi = None, R * 0.05, R
+        for it in range(8):
+            mid = R if it == 0 else (lo + hi) / 2.0
+            res = _fillet_law(cur, cg, lambda ic, j, E, m=mid: [(0.0, m), (1.0, m)], tol)
+            if res is not None:
+                best, lo = (res, mid), mid
+                if it == 0:
+                    break
+            else:
+                hi = mid
+        if best is not None:
+            cur = best[0]
+            used.append((length, best[1]))
+    if not used:
+        return None, None
+    return cur, used
+
+
 def select_edges(solid, feat, base_origin, normal):
     import build123d as b3d
     n = b3d.Vector(normal)
@@ -325,6 +398,18 @@ def build_solid(context, recipe, report=None, skip=(), part_name="", _stack=()):
             try:
                 solid = blend_edges(solid, edges, op, feat["radius"])
             except Exception as e:
+                adapted = None
+                if op == "fillet" and feat.get("adapt", True):
+                    adapted, used = adapt_fillet(solid, edges, feat["radius"])
+                if adapted is not None:
+                    solid = adapted
+                    R = feat["radius"]
+                    reduced = [(L, r) for L, r in used if r < R * 0.999]
+                    if report and reduced:
+                        parts = ", ".join(f"{r * 1000:.2f} mm on a {L * 1000:.0f} mm contour" for L, r in reduced)
+                        report({"WARNING"}, f"Fillet {R * 1000:.2f} mm does not fit everywhere (wall too thin): "
+                                            f"reduced to {parts}; the rest keeps {R * 1000:.2f} mm")
+                    continue
                 if report:
                     # tell what would work: try smaller sizes (not applied)
                     ok = None
@@ -923,6 +1008,9 @@ class View3D_OT_slvs_occt_fillet(Operator):
     radius: FloatProperty(name="Radius", default=0.02, min=0.0001,
                           soft_max=1.0, unit="LENGTH")
     chamfer: BoolProperty(name="Chamfer", default=False)
+    adapt: BoolProperty(name="Fit to the Part", default=True,
+                        description="Where the radius does not fit (thin wall, tight corner), use the "
+                                    "largest radius that fits on that contour instead of failing")
 
     @classmethod
     def poll(cls, context):
@@ -940,7 +1028,7 @@ class View3D_OT_slvs_occt_fillet(Operator):
             self.report({"ERROR"}, "No part")
             return {"CANCELLED"}
         feat = {"op": "chamfer" if self.chamfer else "fillet",
-                "select": self.select, "radius": self.radius}
+                "select": self.select, "radius": self.radius, "adapt": self.adapt}
         if self.select == "CURSOR":
             feat["probe"] = list(context.scene.cursor.location)
         elif self.select == "PICKED":
@@ -1200,6 +1288,9 @@ class View3D_OT_slvs_occt_edit_feature(Operator):
                                  description="Replace the stored regions by the ones picked now with OCCT Pick Regions")
     # fillet / chamfer
     radius: FloatProperty(name="Radius", default=0.0005, min=0.00001, soft_max=1.0, unit="LENGTH")
+    adapt: BoolProperty(name="Fit to the Part", default=True,
+                        description="Where the radius does not fit, use the largest radius that fits "
+                                    "on that contour instead of failing")
     chamfer: BoolProperty(name="Chamfer", default=False)
     # pattern
     kind: EnumProperty(name="Type", items=[("linear", "Linear", ""), ("circular", "Circular", "")])
@@ -1233,6 +1324,7 @@ class View3D_OT_slvs_occt_edit_feature(Operator):
             self.update_regions = False
         elif op in ("fillet", "chamfer"):
             self.radius = f.get("radius", 0.0005)
+            self.adapt = f.get("adapt", True)
             self.chamfer = op == "chamfer"
         elif op == "pattern":
             self.kind = f.get("kind", "linear")
@@ -1270,6 +1362,8 @@ class View3D_OT_slvs_occt_edit_feature(Operator):
         elif op in ("fillet", "chamfer"):
             col.prop(self, "chamfer")
             col.prop(self, "radius", text="Length" if self.chamfer else "Radius")
+            if not self.chamfer:
+                col.prop(self, "adapt")
         elif op == "pattern":
             col.prop(self, "kind", expand=True)
             col.prop(self, "count")
@@ -1310,6 +1404,7 @@ class View3D_OT_slvs_occt_edit_feature(Operator):
         elif op in ("fillet", "chamfer"):
             f["op"] = "chamfer" if self.chamfer else "fillet"
             f["radius"] = self.radius
+            f["adapt"] = self.adapt
         elif op == "pattern":
             f.update(kind=self.kind, count=self.count)
             if self.kind == "linear":
