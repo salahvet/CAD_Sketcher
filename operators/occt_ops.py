@@ -194,14 +194,114 @@ def _fillet_law(solid, edges, law_of, tol):
         return None
 
 
+def _room_fn(solid, edges):
+    """room(edge_shape, point) -> space for a fillet at that point of the edge: distance to the
+    other edges of the edge's two faces (edges touching it are ignored), halved when the nearest
+    one is filleted too."""
+    import build123d as b3d
+    from OCP.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCP.gp import gp_Pnt
+    picked = [e.wrapped for e in edges]
+    faces = solid.faces()
+    cache = []
+
+    def others(E):
+        for k, comp in cache:
+            if k.IsSame(E):
+                return comp
+        verts = b3d.Edge(E).vertices()
+        out = []
+        for f in faces:
+            fes = f.edges()
+            if not any(fe.wrapped.IsSame(E) for fe in fes):
+                continue
+            for fe in fes:
+                if fe.wrapped.IsSame(E):
+                    continue
+                if any(fv.wrapped.IsSame(v.wrapped) for fv in fe.vertices() for v in verts):
+                    continue
+                out.append(fe)
+        comp = b3d.Compound(out).wrapped if out else None
+        cache.append((E, comp))
+        return comp
+
+    def room(E, p):
+        comp = others(E)
+        if comp is None:
+            return float("inf")
+        d = BRepExtrema_DistShapeShape(BRepBuilderAPI_MakeVertex(gp_Pnt(p.X, p.Y, p.Z)).Vertex(), comp)
+        d.Perform()
+        w = d.Value()
+        try:
+            if any(d.SupportOnShape2(1).IsSame(pe) for pe in picked):
+                w /= 2.0
+        except Exception:
+            pass
+        return w
+    return room
+
+
+def _fillet_tapered(solid, edges, R, K, tol, n=8):
+    """Fillet whose radius follows the room: on every edge of every contour a linear law from
+    start to end, each end = min(R, K * the smallest room on that half of the edge); shared
+    vertices take the smaller value. Linear laws need no OCP array type."""
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+    from OCP.ChFi3d import ChFi3d_Rational
+    from OCP.BRepCheck import BRepCheck_Analyzer
+    import build123d as b3d
+    room = _room_fn(solid, edges)
+    mk = BRepFilletAPI_MakeFillet(solid.wrapped, ChFi3d_Rational)
+    mk.SetParams(1e-2, tol, tol / 10.0, tol, tol / 10.0, tol * 10.0)
+    for e in edges:
+        mk.Add(R, e.wrapped)
+    ends, per_edge = [], []
+    for ic in range(1, mk.NbContours() + 1):
+        for j in range(1, mk.NbEdges(ic) + 1):
+            E = mk.Edge(ic, j)
+            be_ = b3d.Edge(E)
+            rs = [min(R, K * room(E, be_.position_at(i / n))) for i in range(n + 1)]
+            r0, r1 = min(rs[:n // 2 + 1]), min(rs[n // 2:])
+            p0, p1 = be_.position_at(0.0), be_.position_at(1.0)
+            per_edge.append((ic, j, p0, p1))
+            ends += [(p0, r0), (p1, r1)]
+    rmin = R
+    for ic, j, p0, p1 in per_edge:
+        r0 = max(min(r for q, r in ends if (q - p0).length < 1e-8), R * 0.05)
+        r1 = max(min(r for q, r in ends if (q - p1).length < 1e-8), R * 0.05)
+        rmin = min(rmin, r0, r1)
+        mk.SetRadius(r0, r1, ic, j)
+    if rmin >= R * 0.999:
+        return None, R  # nothing to narrow: the plain fillet already failed
+    mk.Build()
+    if not mk.IsDone():
+        return None, rmin
+    shape = mk.Shape()
+    if not BRepCheck_Analyzer(shape).IsValid():
+        return None, rmin
+    solids = _solids_of(shape)
+    if len(solids) != 1 or solids[0].volume >= solid.volume:
+        return None, rmin
+    return solids[0], rmin
+
+
 def adapt_fillet(solid, edges, R):
-    """Flexible fillet, used when the radius does not fit everywhere (thin wall, tight corner):
-    the edges are filleted contour by contour (a contour = a chain of tangent edges); each
-    contour keeps R when it fits, else gets the largest radius that fits there. Returns
-    (solid, [(contour length, radius)]) or (None, None)."""
+    """Flexible fillet, used when the radius does not fit everywhere (thin wall, tapering blade,
+    tight corner).
+    1. tapered: R where there is room, narrowing smoothly where the part is thin;
+    2. else, contour by contour, the largest constant radius that fits.
+    Returns (solid, note) or (None, None)."""
     from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
     import build123d as b3d
     tol = _blend_tol(solid)
+    for K in (0.8, 0.6):
+        try:
+            out, rmin = _fillet_tapered(solid, edges, R, K, tol)
+        except Exception:
+            out = None
+        if out is not None:
+            return out, (f"tapered from {R * 1000:.2f} mm down to {rmin * 1000:.2f} mm "
+                         f"where the part is too thin")
     mk = BRepFilletAPI_MakeFillet(solid.wrapped)
     for e in edges:
         mk.Add(1e-4, e.wrapped)
@@ -230,7 +330,10 @@ def adapt_fillet(solid, edges, R):
             used.append((length, best[1]))
     if not used:
         return None, None
-    return cur, used
+    reduced = [(L, r) for L, r in used if r < R * 0.999]
+    note = ("reduced to " + ", ".join(f"{r * 1000:.2f} mm on a {L * 1000:.0f} mm contour" for L, r in reduced)
+            + f"; the rest keeps {R * 1000:.2f} mm") if reduced else None
+    return cur, note
 
 
 def select_edges(solid, feat, base_origin, normal):
@@ -413,12 +516,9 @@ def build_solid(context, recipe, report=None, skip=(), part_name="", _stack=()):
                         print("CAD Sketcher: Fit to the Part failed:", repr(ae))
                 if adapted is not None:
                     solid = adapted
-                    R = feat["radius"]
-                    reduced = [(L, r) for L, r in used if r < R * 0.999]
-                    if report and reduced:
-                        parts = ", ".join(f"{r * 1000:.2f} mm on a {L * 1000:.0f} mm contour" for L, r in reduced)
-                        report({"WARNING"}, f"Fillet {R * 1000:.2f} mm does not fit everywhere (wall too thin): "
-                                            f"reduced to {parts}; the rest keeps {R * 1000:.2f} mm")
+                    if report and used:
+                        report({"WARNING"}, f"Fillet {feat['radius'] * 1000:.2f} mm does not fit everywhere: "
+                                            f"{used}")
                     continue
                 if report:
                     # tell what would work: try smaller sizes (not applied)
