@@ -160,7 +160,6 @@ def _fillet_law(solid, edges, law_of, tol):
     from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
     from OCP.ChFi3d import ChFi3d_Rational
     from OCP.BRepCheck import BRepCheck_Analyzer
-    from OCP.collections import Array1_gp_Pnt2d
     from OCP.gp import gp_Pnt2d
     try:
         mk = BRepFilletAPI_MakeFillet(solid.wrapped, ChFi3d_Rational)
@@ -170,7 +169,14 @@ def _fillet_law(solid, edges, law_of, tol):
         for ic in range(1, mk.NbContours() + 1):
             for j in range(1, mk.NbEdges(ic) + 1):
                 law = law_of(ic, j, mk.Edge(ic, j))
-                arr = Array1_gp_Pnt2d(1, len(law))
+                if all(abs(r - law[0][1]) < 1e-12 for _u, r in law):
+                    mk.SetRadius(law[0][1], ic, j)  # constant: no array type needed
+                    continue
+                try:  # the array type moved between OCP versions
+                    from OCP.collections import Array1_gp_Pnt2d as _Arr
+                except ImportError:
+                    from OCP.TColgp import TColgp_Array1OfPnt2d as _Arr
+                arr = _Arr(1, len(law))
                 for i, (u, r) in enumerate(law):
                     arr.SetValue(i + 1, gp_Pnt2d(u, r))
                 mk.SetRadius(arr, ic, j)
@@ -400,7 +406,11 @@ def build_solid(context, recipe, report=None, skip=(), part_name="", _stack=()):
             except Exception as e:
                 adapted = None
                 if op == "fillet" and feat.get("adapt", True):
-                    adapted, used = adapt_fillet(solid, edges, feat["radius"])
+                    try:
+                        adapted, used = adapt_fillet(solid, edges, feat["radius"])
+                    except Exception as ae:
+                        adapted = None
+                        print("CAD Sketcher: Fit to the Part failed:", repr(ae))
                 if adapted is not None:
                     solid = adapted
                     R = feat["radius"]
